@@ -1,6 +1,53 @@
-# vinext-starter
+# MYEQUATION T-BOT
 
-A clean full-stack starter running on [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and Drizzle support.
+MYEQUATION T-BOT is a browser-based robot control station built with React, TypeScript, and [vinext](https://github.com/cloudflare/vinext). It combines WebSocket robot commands, camera and gesture input, voice control, manual keyboard controls, speed control, telemetry placeholders, event logging, and an emergency stop in one dashboard.
+
+## Programmed Code Sections
+
+### Robot control dashboard
+
+- [`components/tbot-dashboard.tsx`](components/tbot-dashboard.tsx) contains the complete control interface and client-side robot logic.
+- It manages backend and WebSocket connectivity, movement commands, motor speed, keyboard controls, voice recognition, camera access, mock gesture input, telemetry, event logs, and the emergency stop.
+- Movement stays locked until the robot WebSocket is connected. Disconnecting the WebSocket resets the active command to `STOP`.
+
+### Application pages and styling
+
+- [`app/page.tsx`](app/page.tsx) loads the T-BOT dashboard as the main application screen.
+- [`app/layout.tsx`](app/layout.tsx) defines application metadata, the favicon, and the root HTML layout.
+- [`app/globals.css`](app/globals.css) contains the dashboard's responsive visual design, panels, controls, camera area, status indicators, and mobile layout.
+
+### Authentication
+
+- [`app/chatgpt-auth.ts`](app/chatgpt-auth.ts) provides optional Sign in with ChatGPT helpers for hosted environments.
+- The module reads authenticated-user headers, creates safe sign-in and sign-out paths, and can require authentication for protected pages.
+
+### Reusable interface components
+
+- [`components/ui/`](components/ui) contains the reusable React controls used by this project, including buttons, cards, dialogs, forms, inputs, charts, menus, tables, tabs, tooltips, and accessibility-friendly primitives.
+- [`hooks/use-mobile.ts`](hooks/use-mobile.ts) provides responsive viewport detection.
+- [`lib/utils.ts`](lib/utils.ts) contains shared class-name utilities.
+
+### Database support
+
+- [`db/index.ts`](db/index.ts) creates the Drizzle client for an optional Cloudflare D1 database.
+- [`db/schema.ts`](db/schema.ts) is the project schema entry point and is ready for T-BOT data tables when persistence is required.
+- [`examples/d1/`](examples/d1) contains an optional working D1 notes example without changing the main application schema.
+- [`drizzle.config.ts`](drizzle.config.ts) and [`drizzle/meta/`](drizzle/meta) contain migration configuration and metadata.
+
+### Build and runtime tooling
+
+- [`scripts/`](scripts) contains dependency installation, environment setup, build verification, and framework launcher scripts.
+- [`build/sites-vite-plugin.ts`](build/sites-vite-plugin.ts) contains the Sites Vite integration used by the project.
+- [`vite.config.ts`](vite.config.ts), [`next.config.ts`](next.config.ts), [`postcss.config.mjs`](postcss.config.mjs), [`eslint.config.mjs`](eslint.config.mjs), and [`tsconfig.json`](tsconfig.json) configure the application toolchain.
+- [`package.json`](package.json), [`package-lock.json`](package-lock.json), and [`pnpm-lock.yaml`](pnpm-lock.yaml) record scripts and exact dependencies for reproducible installation.
+
+### Static assets and hosting
+
+- [`public/`](public) contains the application favicon and supporting SVG assets.
+- [`.openai/hosting.json`](.openai/hosting.json) declares optional hosted D1 and R2 bindings.
+- [`cloudflare-env.d.ts`](cloudflare-env.d.ts) defines the Cloudflare binding types used by the application.
+
+Generated dependencies, build output, local runtime state, and environment-secret files are intentionally excluded through [`.gitignore`](.gitignore). They can be recreated from the tracked source and lockfiles and should not be committed.
 
 ## Prerequisites
 
