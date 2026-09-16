@@ -23,7 +23,7 @@ MYEQUATION T-BOT is a browser-based robot control station built with React, Type
 
 ### Reusable interface components
 
-- [`components/ui/`](components/ui) contains the reusable React controls used by this project, including buttons, cards, dialogs, forms, inputs, charts, menus, tables, tabs, tooltips, and accessibility-friendly primitives.
+- [`components/ui/`](https://github.com/anshurajyu/MYEQ_T-BOT.apex/tree/main/components/ui) contains the reusable React controls used by this project, including buttons, cards, dialogs, forms, inputs, charts, menus, tables, tabs, tooltips, and accessibility-friendly primitives.
 - [`hooks/use-mobile.ts`](hooks/use-mobile.ts) provides responsive viewport detection.
 - [`lib/utils.ts`](lib/utils.ts) contains shared class-name utilities.
 
@@ -31,19 +31,19 @@ MYEQUATION T-BOT is a browser-based robot control station built with React, Type
 
 - [`db/index.ts`](db/index.ts) creates the Drizzle client for an optional Cloudflare D1 database.
 - [`db/schema.ts`](db/schema.ts) is the project schema entry point and is ready for T-BOT data tables when persistence is required.
-- [`examples/d1/`](examples/d1) contains an optional working D1 notes example without changing the main application schema.
-- [`drizzle.config.ts`](drizzle.config.ts) and [`drizzle/meta/`](drizzle/meta) contain migration configuration and metadata.
+- [`examples/d1/`](https://github.com/anshurajyu/MYEQ_T-BOT.apex/tree/main/examples/d1) contains an optional working D1 notes example without changing the main application schema.
+- [`drizzle.config.ts`](drizzle.config.ts) and [`drizzle/meta/`](https://github.com/anshurajyu/MYEQ_T-BOT.apex/tree/main/drizzle/meta) contain migration configuration and metadata.
 
 ### Build and runtime tooling
 
-- [`scripts/`](scripts) contains dependency installation, environment setup, build verification, and framework launcher scripts.
+- [`scripts/`](https://github.com/anshurajyu/MYEQ_T-BOT.apex/tree/main/scripts) contains dependency installation, environment setup, build verification, and framework launcher scripts.
 - [`build/sites-vite-plugin.ts`](build/sites-vite-plugin.ts) contains the Sites Vite integration used by the project.
 - [`vite.config.ts`](vite.config.ts), [`next.config.ts`](next.config.ts), [`postcss.config.mjs`](postcss.config.mjs), [`eslint.config.mjs`](eslint.config.mjs), and [`tsconfig.json`](tsconfig.json) configure the application toolchain.
 - [`package.json`](package.json), [`package-lock.json`](package-lock.json), and [`pnpm-lock.yaml`](pnpm-lock.yaml) record scripts and exact dependencies for reproducible installation.
 
 ### Static assets and hosting
 
-- [`public/`](public) contains the application favicon and supporting SVG assets.
+- [`public/`](https://github.com/anshurajyu/MYEQ_T-BOT.apex/tree/main/public) contains the application favicon and supporting SVG assets.
 - [`.openai/hosting.json`](.openai/hosting.json) declares optional hosted D1 and R2 bindings.
 - [`cloudflare-env.d.ts`](cloudflare-env.d.ts) defines the Cloudflare binding types used by the application.
 
