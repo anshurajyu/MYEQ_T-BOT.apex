@@ -1,0 +1,8 @@
+# Web controller
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+
+# Raspberry Pi GPIO.  gpiozero is the beginner-friendly, Arduino-style API;
+# lgpio is its modern low-level GPIO backend on Raspberry Pi OS.
+gpiozero>=2.0,<3.0
+lgpio>=0.2.2.0,<1.0

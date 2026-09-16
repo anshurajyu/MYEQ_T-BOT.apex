@@ -10,6 +10,11 @@ MYEQUATION T-BOT is a browser-based robot control station built with React, Type
 - It manages backend and WebSocket connectivity, movement commands, motor speed, keyboard controls, voice recognition, camera access, mock gesture input, telemetry, event logs, and the emergency stop.
 - Movement stays locked until the robot WebSocket is connected. Disconnecting the WebSocket resets the active command to `STOP`.
 
+### Raspberry Pi robot programs
+
+- [`robot-code/`](https://github.com/anshurajyu/MYEQ_T-BOT.apex/tree/main/robot-code) contains the Python programs imported from `/home/apex/Desktop/MYEQ_T-BOT.apex`.
+- Its [program index](robot-code/README.md) separates and explains the RPM/10-centimeter calibration, WASD controller, camera gesture controller, two-servo checker, FastAPI connection server, and Raspberry Pi GPIO template.
+
 ### Application pages and styling
 
 - [`app/page.tsx`](app/page.tsx) loads the T-BOT dashboard as the main application screen.
