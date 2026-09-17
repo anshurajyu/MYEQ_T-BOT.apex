@@ -1,0 +1,14 @@
+[Unit]
+Description=T-Bot private dashboard gateway
+After=tbot-navigation.service
+
+[Service]
+Type=simple
+WorkingDirectory=__ROOT__
+EnvironmentFile=-__ROOT__/.tbot.env
+ExecStart=__ROOT__/scripts/tbot-backend.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

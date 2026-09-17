@@ -44,6 +44,11 @@ next-env.d.ts
 /.codex/
 /outputs/
 /work/
-
 # Local VS Code workspace settings
 .vscode/
+
+/.venv-tbot/
+/.tbot-data/
+/.tbot-tools/
+__pycache__/
+*.tsbuildinfo

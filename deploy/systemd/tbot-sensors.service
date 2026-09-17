@@ -1,0 +1,14 @@
+[Unit]
+Description=T-Bot YDLIDAR X2, BNO055, and TF tree
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__ROOT__
+EnvironmentFile=-__ROOT__/.tbot.env
+ExecStart=__ROOT__/scripts/tbot-sensors.sh
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

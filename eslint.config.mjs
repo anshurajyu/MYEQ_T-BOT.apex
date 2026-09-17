@@ -9,8 +9,13 @@ const eslintConfig = defineConfig([
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
+    ".vinext/**",
+    "dist/**",
     "out/**",
     "build/**",
+    // MediaPipe ships generated Emscripten loaders and binary model assets.
+    "public/mediapipe/**",
+    "public/models/**",
     "next-env.d.ts",
   ]),
   {
@@ -21,6 +26,23 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-unused-vars": "off",
       "react-hooks/purity": "off",
       "react-hooks/set-state-in-effect": "off",
+    },
+  },
+  {
+    files: [
+      "components/mission-console.tsx",
+      "components/tablet-controller.tsx",
+      "components/tbot-dashboard.tsx",
+      "components/tbot-prototype.tsx",
+      "lib/tbot/client.ts",
+    ],
+    rules: {
+      // These controllers intentionally keep latest real-time control state in
+      // refs and synchronise fail-safe UI state from connection effects.
+      "react-hooks/refs": "off",
+      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/static-components": "off",
+      "@typescript-eslint/no-explicit-any": "off",
     },
   },
 ]);

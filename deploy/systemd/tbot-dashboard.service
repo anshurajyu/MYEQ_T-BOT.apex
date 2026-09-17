@@ -1,0 +1,13 @@
+[Unit]
+Description=T-Bot Mission Control web dashboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__ROOT__
+ExecStart=__ROOT__/scripts/tbot-web.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

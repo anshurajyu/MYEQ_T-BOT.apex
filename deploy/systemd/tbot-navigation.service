@@ -1,0 +1,14 @@
+[Unit]
+Description=T-Bot physical Nav2 stack
+After=tbot-guard.service
+Requires=tbot-guard.service
+
+[Service]
+Type=simple
+WorkingDirectory=__ROOT__
+ExecStart=__ROOT__/scripts/tbot-navigation.sh
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

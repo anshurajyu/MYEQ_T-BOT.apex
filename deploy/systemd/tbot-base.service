@@ -1,0 +1,15 @@
+[Unit]
+Description=T-Bot ST3215 base and odometry
+After=tbot-sensors.service
+Wants=tbot-sensors.service
+
+[Service]
+Type=simple
+WorkingDirectory=__ROOT__
+EnvironmentFile=-__ROOT__/.tbot.env
+ExecStart=__ROOT__/scripts/tbot-base.sh
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

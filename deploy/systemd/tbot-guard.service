@@ -1,0 +1,14 @@
+[Unit]
+Description=T-Bot velocity safety guard
+After=tbot-base.service
+Requires=tbot-base.service
+
+[Service]
+Type=simple
+WorkingDirectory=__ROOT__
+ExecStart=__ROOT__/scripts/tbot-guard.sh
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

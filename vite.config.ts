@@ -1,5 +1,4 @@
 import vinext from "vinext";
-import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { readExecutionProfile } from "./scripts/execution-profile.mjs";
 import { sites } from "./build/sites-vite-plugin";
@@ -35,7 +34,7 @@ const localBindingConfig = {
     : [],
 };
 
-export default defineConfig(async () => {
+export default async function configureVite() {
   // Use Miniflare's local Request.cf placeholder unless fetching is requested.
   process.env.CLOUDFLARE_CF_FETCH_ENABLED ??= "false";
   process.env.WRANGLER_SEND_METRICS ??= "false";
@@ -55,6 +54,18 @@ export default defineConfig(async () => {
       // The dashboard is intended to be opened by a phone on the same LAN.
       host: "0.0.0.0",
       allowedHosts: true,
+      proxy: {
+        "/api": {
+          target: "http://127.0.0.1:8001",
+          changeOrigin: true,
+          rewrite: (path: string) => path.replace(/^\/api/, ""),
+        },
+        "/api/ws": {
+          target: "ws://127.0.0.1:8001",
+          ws: true,
+          rewrite: (path: string) => path.replace(/^\/api/, ""),
+        },
+      },
       ...(isCodexSeatbeltSandbox ? { watch: { useFsEvents: false, usePolling: true } } : {}),
     },
     plugins: [
@@ -67,4 +78,4 @@ export default defineConfig(async () => {
       }),
     ],
   };
-});
+}

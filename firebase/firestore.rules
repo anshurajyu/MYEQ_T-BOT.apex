@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function member(team) {
+      return request.auth != null && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/teams/$(team)/members/$(request.auth.uid));
+    }
+    match /teams/{team}/members/{uid} {
+      allow get: if request.auth != null && request.auth.uid == uid;
+      allow list, write: if false;
+    }
+    match /teams/{team}/missions/{id} {
+      allow read: if member(team);
+      allow create, update: if member(team)
+        && request.resource.data.keys().hasOnly(['name','map_id','map_version','points','return_home','updatedAt'])
+        && request.resource.data.name is string && request.resource.data.name.size() <= 80
+        && request.resource.data.map_id is string && request.resource.data.map_id.size() <= 80
+        && (!request.resource.data.keys().hasAny(['map_version']) || (request.resource.data.map_version is string && request.resource.data.map_version.size() <= 64))
+        && request.resource.data.points is list && request.resource.data.points.size() > 0
+        && request.resource.data.points.size() <= 100 && request.resource.data.return_home is bool;
+      allow delete: if false;
+    }
+    match /teams/{team}/runs/{id} {
+      allow read: if member(team);
+      allow create, update: if member(team)
+        && request.resource.data.keys().hasOnly(['id','status','map_id','started','finished','completed_checkpoints','updatedAt'])
+        && request.resource.data.status is string && request.resource.data.status.size() <= 500;
+      allow delete: if false;
+    }
+    match /teams/{team}/preferences/{uid} {
+      allow read: if member(team) && request.auth.uid == uid;
+      allow create, update: if member(team) && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['teamMode','updatedAt'])
+        && request.resource.data.teamMode is bool;
+      allow delete: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

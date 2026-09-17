@@ -1,14 +1,63 @@
 # MYEQUATION T-BOT
 
-MYEQUATION T-BOT is a browser-based robot control station built with React, TypeScript, and [vinext](https://github.com/cloudflare/vinext). It combines WebSocket robot commands, camera and gesture input, voice control, manual keyboard controls, speed control, telemetry placeholders, event logging, and an emergency stop in one dashboard.
+MYEQUATION T-BOT is a private, cartoon-styled ROS 2 mission cockpit for the custom Raspberry Pi 4B robot. Its physical profile targets YDLIDAR X2, BNO055, two mirror-mounted ST3215-HS bus servos (right ID 1, left ID 2), the Waveshare Bus Servo Adapter, and 0.21038 m wheel circumference.
+
+The demonstration flow is **Gamepad Teach → Validate Path → Autonomous Replay → Return Home**. The same dashboard also supports mapping, exploration, voice, odometry tests, tablet gesture control, calibration, and hardware diagnostics. Exclusive authority and the velocity guard ensure only one source can move the robot; Stop always wins.
+
+## Test the complete system without a robot
+
+The local gateway starts in **Virtual Lab** mode by default. It generates a deterministic workshop, simulated TurtleBot3 odometry, 2D LiDAR, an occupancy map, battery use, collision-aware navigation, checkpoint progress, and mission history. It uses the same validated WebSocket command path as the ROS 2 adapter.
+
+After cloning the repository, install the web and Python dependencies once:
+
+```bash
+npm ci
+python3 -m venv .venv-tbot
+.venv-tbot/bin/python -m pip install --upgrade pip
+.venv-tbot/bin/python -m pip install -r backend/requirements.txt
+```
+
+On Windows PowerShell, activate the Python environment with
+`.venv-tbot\Scripts\Activate.ps1` and install `backend/requirements.txt` with
+`python -m pip`. The supplied launcher scripts target Linux, macOS, and the
+Raspberry Pi; Windows users can start the backend directly with
+`python -m uvicorn backend.app:app --host 127.0.0.1 --port 8001`.
+
+Start the backend and dashboard in separate terminals:
+
+```bash
+./scripts/tbot-virtual.sh
+npm run dev -- --hostname 127.0.0.1 --port 5173
+```
+
+Open [http://127.0.0.1:5173/mission-control](http://127.0.0.1:5173/mission-control), then press **Run Full Demo**. The virtual robot drives two checkpoints, returns Home, and saves the completed run. **Inspect Backend** shows sensor freshness, navigation and guard state, virtual topics, recent command events, and run history. The raw FastAPI inspector is available at [http://127.0.0.1:8001/docs](http://127.0.0.1:8001/docs).
+
+Local missions, photos, maps, settings, events, hardware calibration, and run history are kept under `.tbot-data/`. Use **Reset Virtual Lab** in the technical panel to restore the virtual robot and map.
+
+## Raspberry Pi production setup
+
+The Pi runs Ubuntu 24.04 with ROS 2 Jazzy and owns the servo bus, sensors, localization, Nav2, safety guard, database, gateway, and web app. Enter the measured wheel separation, footprint, LiDAR/IMU offsets, and encoder scale in **Calibration** before physical autonomy can unlock.
+
+```bash
+./scripts/tbot-install-ros.sh
+npm ci && npm run build
+./scripts/tbot-install-services.sh
+sudo tailscale up
+./scripts/tbot-pi-launch.sh
+```
+
+The final command prints the stable private `https://<tbot>.ts.net/mission-control` link. Open it on the laptop, choose **Tablet**, and scan the short-lived QR code on the tablet. Camera frames stay on the tablet; only the five-zone direction and telemetry cross the private WebSocket. Tailscale sign-in and the physical measurements are intentional one-time human steps.
+
+The base driver reads the saved hardware profile on startup. Restart `tbot-base`, `tbot-guard`, and `tbot-navigation` after changing physical calibration. Deployment remains locked until LiDAR, BNO055, motor bus, odometry, TF, Nav2, guard, and calibration checks all pass.
 
 ## Programmed Code Sections
 
 ### Robot control dashboard
 
-- [`components/tbot-dashboard.tsx`](components/tbot-dashboard.tsx) contains the complete control interface and client-side robot logic.
-- It manages backend and WebSocket connectivity, movement commands, motor speed, keyboard controls, voice recognition, camera access, mock gesture input, telemetry, event logs, and the emergency stop.
-- Movement stays locked until the robot WebSocket is connected. Disconnecting the WebSocket resets the active command to `STOP`.
+- [`components/mission-console.tsx`](components/mission-console.tsx) contains the laptop cockpit, planner, gamepad mapping, calibration, and diagnostics.
+- [`components/tablet-controller.tsx`](components/tablet-controller.tsx) contains the local MediaPipe five-zone gesture stick.
+- [`backend/base_node.py`](backend/base_node.py), [`backend/velocity_guard.py`](backend/velocity_guard.py), and [`backend/ros_adapter.py`](backend/ros_adapter.py) own physical motion and ROS telemetry.
+- [`backend/planner.py`](backend/planner.py) provides inflated-grid route validation and Virtual Lab planning.
 
 ### Raspberry Pi robot programs
 
