@@ -1,0 +1,3 @@
+# Optional motor SDK for the Mac/Linux USB adapter. No serial port opens on install.
+# Use the same interpreter for the backend and relay, or TBOT_SERVO_PYTHON.
+python-st3215==1.2.1

@@ -3,7 +3,7 @@ import math
 import re
 import hashlib
 from typing import Literal
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 class Point(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False, extra='forbid')
@@ -53,7 +53,7 @@ class PlanRequest(BaseModel):
     start: Point | None = None
 
 class ModeRequest(BaseModel):
-    mode: Literal['simulation','hardware']
+    mode: Literal['simulation','hardware','direct_usb']
 
 class RunnerRequest(BaseModel):
     path: str = Field(min_length=1, max_length=300)
@@ -69,6 +69,12 @@ def map_version(grid: dict | None) -> str:
 
 class Command(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False, extra='forbid')
+    @model_validator(mode='before')
+    @classmethod
+    def explicit_movement_vector(cls,value):
+        if isinstance(value,dict) and value.get('action') in ('drive','timed') and not {'linear','angular'} <= value.keys():
+            raise ValueError('Movement commands require explicit linear and angular values')
+        return value
     id: str = Field(min_length=1, max_length=80)
     action: Literal['stop','claim','release','drive','timed','home_set','home_go','mission','pause','resume','retry','skip','cancel','distance','angle','explore','map_save','map_load']
     source: Literal['keyboard','gesture','voice','mission','gamepad'] = 'keyboard'
@@ -77,9 +83,17 @@ class Command(BaseModel):
     value: float = Field(default=0, ge=-360, le=360)
     mission: Mission | None = None
     name: str = Field(default='', max_length=80)
+    # A server-issued epoch/permit bounds both ordering and time in transit.
+    # STOP deliberately remains usable without these fields.
+    epoch: str = Field(default='', max_length=100)
+    generation: int | None = Field(default=None, ge=0, le=9007199254740991, strict=True)
+    seq: int | None = Field(default=None, ge=0, le=9007199254740991, strict=True)
+    permit: str = Field(default='', max_length=100)
 
 NUMBERS = {'one':1,'two':2,'three':3,'four':4,'five':5,'six':6,'seven':7,'eight':8,'nine':9,'ten':10,'fifteen':15,'twenty':20,'thirty':30,'forty':40,'fifty':50,'sixty':60,'ninety':90,'hundred':100}
 def parse_voice(text: str) -> dict:
+    if not isinstance(text,str) or not text.strip() or len(text)>500:
+        raise ValueError('Provide a short, non-empty voice command as text')
     text = re.sub(r'[^a-z0-9 .-]', '', text.lower()).strip()
     if text in ('stop','emergency stop','robot stop','cancel','cancel mission'):
         return {'action':'stop','source':'voice'}

@@ -2,6 +2,8 @@ import vinext from "vinext";
 import hostingConfig from "./.openai/hosting.json";
 import { readExecutionProfile } from "./scripts/execution-profile.mjs";
 import { sites } from "./build/sites-vite-plugin";
+import { fileURLToPath } from "node:url";
+import type { Plugin } from "vite";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
@@ -11,6 +13,18 @@ const { d1, r2 } = hostingConfig;
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 const managedLinux = readExecutionProfile() === "managed-linux";
+const projectRoot = fileURLToPath(new URL(".", import.meta.url)).replace(/\/$/, "");
+const publicUrl = process.env.TBOT_PUBLIC_URL || "";
+const publicHost = publicUrl ? new URL(publicUrl).hostname : null;
+const classroomStatus: Plugin = {
+  name: "tbot-classroom-status",
+  configureServer(server) {
+    server.middlewares.use("/__tbot/status", (_request, response) => {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ instance: { root: projectRoot, protocol: 2, pid: process.pid }, public_url: publicUrl }));
+    });
+  },
+};
 
 const localBindingConfig = {
   main: "vinext/server/fetch-handler",
@@ -34,7 +48,7 @@ const localBindingConfig = {
     : [],
 };
 
-export default async function configureVite() {
+export default async function configureVite({ command }: { command: string }) {
   // Use Miniflare's local Request.cf placeholder unless fetching is requested.
   process.env.CLOUDFLARE_CF_FETCH_ENABLED ??= "false";
   process.env.WRANGLER_SEND_METRICS ??= "false";
@@ -51,17 +65,15 @@ export default async function configureVite() {
 
   return {
     server: {
-      // The dashboard is intended to be opened by a phone on the same LAN.
-      host: "0.0.0.0",
-      allowedHosts: true,
+      // Private Tailscale Serve forwards to loopback; no blanket LAN host trust.
+      host: "127.0.0.1",
+      allowedHosts: ["localhost", ...(publicHost ? [publicHost] : [])],
+      strictPort: true,
       proxy: {
         "/api": {
           target: "http://127.0.0.1:8001",
           changeOrigin: true,
-          rewrite: (path: string) => path.replace(/^\/api/, ""),
-        },
-        "/api/ws": {
-          target: "ws://127.0.0.1:8001",
+          // Both /ws and /voice/live use the same authenticated gateway.
           ws: true,
           rewrite: (path: string) => path.replace(/^\/api/, ""),
         },
@@ -69,13 +81,18 @@ export default async function configureVite() {
       ...(isCodexSeatbeltSandbox ? { watch: { useFsEvents: false, usePolling: true } } : {}),
     },
     plugins: [
+      classroomStatus,
       vinext(),
       sites({ mockAuth: !managedLinux }),
-      cloudflare({
+      // The local robot gateway owns /api WebSockets. The Worker dev plugin
+      // also handles every upgrade and closes these externally proxied sockets.
+      // Portable development uses Vinext's Node runtime; deployment builds
+      // and the managed hosting environment retain the Worker runtime.
+      ...(managedLinux || command === "build" ? cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         inspectorPort: false,
         config: localBindingConfig,
-      }),
+      }) : []),
     ],
   };
 }

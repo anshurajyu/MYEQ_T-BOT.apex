@@ -6,6 +6,11 @@ import time
 
 def yaw(q):return math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
 
+def select_sensor_topic(label,candidates,configured=None):
+    if configured:return configured if configured in candidates else None
+    preferred={'odom':('/odometry/filtered','/odom','/wheel/odom'),'battery':('/battery_state',)}.get(label,('/'+label,))
+    return next((topic for topic in preferred if topic in candidates),candidates[0] if len(candidates)==1 else None)
+
 class RosAdapter:
     def __init__(self):
         import rclpy
@@ -39,9 +44,10 @@ class RosAdapter:
             for typ,(cls,cb) in self.types.items():
                 label={'sensor_msgs/msg/LaserScan':'scan','nav_msgs/msg/OccupancyGrid':'map','nav_msgs/msg/Odometry':'odom','sensor_msgs/msg/BatteryState':'battery','sensor_msgs/msg/Imu':'imu'}[typ]
                 candidates=[n for n,ts in names if typ in ts]
-                configured=os.environ.get('TBOT_'+label.upper()+'_TOPIC');preferred=configured or '/'+{'battery':'battery_state'}.get(label,label)
-                topic=preferred if preferred in candidates else (candidates[0] if not configured and len(candidates)==1 else None)
-                if topic and label not in self.subscriptions:
+                configured=os.environ.get('TBOT_'+label.upper()+'_TOPIC')
+                topic=select_sensor_topic(label,candidates,configured)
+                if topic and (label not in self.subscriptions or self.topics.get(label,{}).get('name')!=topic):
+                    if label in self.subscriptions:self.node.destroy_subscription(self.subscriptions[label])
                     self.subscriptions[label]=self.node.create_subscription(cls,topic,cb,self.map_qos if label=='map' else self.sensor_qos);self.topics[label]={'name':topic,'type':typ}
                 elif not topic:self.topics[label]={'candidates':candidates,'error':'missing or ambiguous topic; configure TBOT_'+label.upper()+'_TOPIC'}
             # Manual and Nav2 commands are routed through the downstream guard.

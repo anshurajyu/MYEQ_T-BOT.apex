@@ -1,7 +1,8 @@
 """Line-delimited dashboard bridge for the USB ST3215 bus.
 
 It is deliberately small: only direction vectors enter over stdin, it uses a
-300 ms command watchdog, and every exit actively stops then disables torque.
+300 ms command watchdog, and orderly exits stop then disable torque. A killed
+process or a failed OS still requires an independent hardware/servo watchdog.
 """
 from __future__ import annotations
 
@@ -9,8 +10,11 @@ import json
 import select
 import sys
 import time
+from pathlib import Path
 
-from python_st3215 import ST3215
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from backend.serial_owner import OwnedST3215 as ST3215
+from backend.usb_transport import select_servo_port
 
 PORT = "/dev/ttyACM0"
 RIGHT_ID, LEFT_ID = 1, 2
@@ -27,7 +31,8 @@ def wheel_speeds(linear: float, angular: float) -> tuple[int, int]:
 
 
 def main() -> None:
-    bus = ST3215(PORT)
+    port = select_servo_port()
+    bus = ST3215(port)
     right, left = bus.wrap_servo(RIGHT_ID), bus.wrap_servo(LEFT_ID)
 
     def apply(linear: float = 0.0, angular: float = 0.0) -> None:
@@ -47,7 +52,7 @@ def main() -> None:
 
     try:
         right.eeprom.write_operating_mode(1); left.eeprom.write_operating_mode(1)
-        apply(); print(json.dumps({"ready": True, "port": PORT}), flush=True)
+        apply(); print(json.dumps({"ready": True, "port": port}), flush=True)
         last = time.monotonic()
         while True:
             ready, _, _ = select.select([sys.stdin], [], [], 0.05)

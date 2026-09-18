@@ -2,7 +2,16 @@
 
 MYEQUATION T-BOT is a private, cartoon-styled ROS 2 mission cockpit for the custom Raspberry Pi 4B robot. Its physical profile targets YDLIDAR X2, BNO055, two mirror-mounted ST3215-HS bus servos (right ID 1, left ID 2), the Waveshare Bus Servo Adapter, and 0.21038 m wheel circumference.
 
-The demonstration flow is **Gamepad Teach → Validate Path → Autonomous Replay → Return Home**. The same dashboard also supports mapping, exploration, voice, odometry tests, tablet gesture control, calibration, and hardware diagnostics. Exclusive authority and the velocity guard ensure only one source can move the robot; Stop always wins.
+The dashboard supports keyboard, gamepad, tablet gesture and voice control, plus mapping, exploration, odometry tests, calibration and hardware diagnostics. The full ROS navigation flow is **Gamepad Teach → Validate Path → Autonomous Replay → Return Home** and requires commissioned sensors and calibration.
+
+## Current classroom setup: Mac USB control
+
+The confirmed working setup has the **servo USB adapter connected to the Mac, with the motor Python program running on the Mac**. SSH to the Raspberry Pi is a separate connection. `/` redirects to `/mission-control`; the legacy page is retained at `/demo`.
+
+- [Classroom startup and control checklist](docs/classroom-control-checklist.md): exact Mac startup commands, existing servo interpreter/device configuration, Android HTTPS pairing, mode switching and four-control tests.
+- [Repository and control-path audit](docs/tbot-audit.md): project functions, reproduced gesture/voice defects, repairs, offline verification and remaining hardware checks.
+
+Choose **SIMULATION**, **DIRECT_USB**, or **ROS_PI** in the Output selector. DIRECT_USB uses a managed Mac/Linux relay and reports no fabricated map, odometry or sensors. It supports manual directions and timed voice; measured movement and autonomy require real feedback. SDK response confirmation is not proof of wheel motion. The Pi production deployment below is a separate commissioning path.
 
 ## Test the complete system without a robot
 
@@ -15,6 +24,7 @@ npm ci
 python3 -m venv .venv-tbot
 .venv-tbot/bin/python -m pip install --upgrade pip
 .venv-tbot/bin/python -m pip install -r backend/requirements.txt
+.venv-tbot/bin/python scripts/tbot-assets.py
 ```
 
 On Windows PowerShell, activate the Python environment with
@@ -23,20 +33,25 @@ On Windows PowerShell, activate the Python environment with
 Raspberry Pi; Windows users can start the backend directly with
 `python -m uvicorn backend.app:app --host 127.0.0.1 --port 8001`.
 
-Start the backend and dashboard in separate terminals:
+On macOS/Linux, start the prepared checkout with one command:
 
 ```bash
-./scripts/tbot-virtual.sh
-npm run dev -- --hostname 127.0.0.1 --port 5173
+./scripts/tbot-classroom.sh
 ```
+
+The launcher uses the current checkout and installed runtimes, starts new processes in SIMULATION on loopback, checks server/proxy identity, and discovers the current private Tailscale HTTPS URL. It does not install packages or open USB. Use `./scripts/tbot-classroom.sh preflight`, `status`, or `stop`; `--no-open` suppresses browser opening. It reuses compatible servers and stops only its verified recorded processes. Logs are under `.tbot-data/runtime/`. Missing/offline Tailscale leaves local controls usable and reports secure phone camera unavailable. Pairing derives its secure URL from the gateway, so the laptop may generate a phone QR from localhost.
+
+Node **22.13+** is supported; **24.19.0** is the tested `.node-version` pin. `TBOT_NODE` and `TBOT_PYTHON` select installed runtimes when needed. For USB, use the known working servo interpreter or install `backend/requirements-direct-usb.txt` (`python-st3215==1.2.1`), and select the verified device with `TBOT_SERIAL_PORT` (legacy `TBOT_SERVO_PORT` also works). Automatic USB selection requires both configured VID/PID filters and a unique matching adapter. Follow the classroom guide before choosing DIRECT_USB.
 
 Open [http://127.0.0.1:5173/mission-control](http://127.0.0.1:5173/mission-control), then press **Run Full Demo**. The virtual robot drives two checkpoints, returns Home, and saves the completed run. **Inspect Backend** shows sensor freshness, navigation and guard state, virtual topics, recent command events, and run history. The raw FastAPI inspector is available at [http://127.0.0.1:8001/docs](http://127.0.0.1:8001/docs).
 
 Local missions, photos, maps, settings, events, hardware calibration, and run history are kept under `.tbot-data/`. Use **Reset Virtual Lab** in the technical panel to restore the virtual robot and map.
 
+Run the repeatable control regressions without opening a serial device with `node scripts/tbot-check.mjs` (or `npm run test:controls`). See the classroom guide for portable setup, secure Android pairing, input switching and the wheels-up acceptance sequence. Stop is latched and requires explicit re-arm; torque-off plus zero speed does not establish instant physical braking or protection after relay/OS failure.
+
 ## Raspberry Pi production setup
 
-The Pi runs Ubuntu 24.04 with ROS 2 Jazzy and owns the servo bus, sensors, localization, Nav2, safety guard, database, gateway, and web app. Enter the measured wheel separation, footprint, LiDAR/IMU offsets, and encoder scale in **Calibration** before physical autonomy can unlock.
+In this alternative deployment, the Pi runs Ubuntu 24.04 with ROS 2 Jazzy and owns the servo bus, sensors, localization, Nav2, safety guard, database, gateway, and web app. It assumes USB has been moved to the Pi and that ROS, the sensor drivers and wiring have been verified. Enter the measured wheel separation, footprint, LiDAR/IMU offsets, and encoder scale in **Calibration** before physical autonomy can unlock. See the classroom guide's hardware mismatch section before using these scripts.
 
 ```bash
 ./scripts/tbot-install-ros.sh
@@ -46,7 +61,7 @@ sudo tailscale up
 ./scripts/tbot-pi-launch.sh
 ```
 
-The final command prints the stable private `https://<tbot>.ts.net/mission-control` link. Open it on the laptop, choose **Tablet**, and scan the short-lived QR code on the tablet. Camera frames stay on the tablet; only the five-zone direction and telemetry cross the private WebSocket. Tailscale sign-in and the physical measurements are intentional one-time human steps.
+These older deployment scripts use a built web app on port 8787; current classroom pairing validates the private root route on 5173. Commission and verify that separate deployment's routing before claiming phone control works there. It is not needed for the Mac USB demonstration. Camera frames stay on the phone; the classroom path carries commands and telemetry over private HTTPS.
 
 The base driver reads the saved hardware profile on startup. Restart `tbot-base`, `tbot-guard`, and `tbot-navigation` after changing physical calibration. Deployment remains locked until LiDAR, BNO055, motor bus, odometry, TF, Nav2, guard, and calibration checks all pass.
 
@@ -114,7 +129,7 @@ Generated dependencies, build output, local runtime state, and environment-secre
 
 The Sites initializer copies the shared starter and selects managed-linux only when `SITES_MANAGED_LINUX_CONTAINER=1`; otherwise it selects portable. It saves the selection only in ignored `.sites-runtime/execution-profile.json`. Both profiles copy/configure first, then use the plugin's separate `install-dependencies.mjs` step to measure installation independently. Edit source under `app/` and follow the Sites skill for installation, preview, builds, and publishing.
 
-Whenever reopening or moving a checkout, run `node <plugin-root>/scripts/configure-execution-profile.mjs` before project commands. Profile changes do not alter tracked source or require reinstalling otherwise-valid dependencies; restart an existing preview to use the new selection. Do not commit or upload `.sites-runtime/`.
+Clean clones default to the portable profile; classroom startup does not require a Sites plugin or a plugin-specific path. For Sites-managed work, run the plugin's `configure-execution-profile.mjs` when changing that execution profile. Profile changes do not alter tracked source or require reinstalling otherwise-valid dependencies; restart an existing preview to use the new selection. Do not commit or upload `.sites-runtime/`.
 
 This starter does not use `wrangler.jsonc`.
 
@@ -125,7 +140,7 @@ This starter does not use `wrangler.jsonc`.
 
 `scripts/sites-env.mjs` preserves the caller's HOME, npm cache, proxy, XDG, and temporary-directory configuration while defaulting Wrangler and Miniflare state to the checkout. If npm reports an unwritable cache, select a writable path with `npm_config_cache` for that install. The `dev` and `start` scripts also keep Wrangler logs inside the checkout. Generated `.sites-runtime/` and `.wrangler/` directories are disposable and ignored by Git.
 
-On portable, `npm run dev` uses `vinext dev` with HMR, starting at port 5173. Vinext records the running server in ignored `.vinext/` state, rejects an ordinary duplicate launch, and recovers stale state after a stopped process; exactly simultaneous starts can race. Pass `--port <port>` or `--hostname <host>` after `npm run dev --` when needed; keep portable previews on loopback.
+On portable, `npm run dev` uses `vinext dev` with HMR and its Node runtime, starting at port 5173. This keeps the robot gateway's `/api` WebSockets separate from the Cloudflare plugin's upgrade handler. Worker builds and managed hosting retain the Cloudflare runtime; optional D1/R2 emulation uses that flow. Vinext records the running server in ignored `.vinext/` state, rejects an ordinary duplicate launch, and recovers stale state after a stopped process; exactly simultaneous starts can race. Pass `--port <port>` or `--hostname <host>` after `npm run dev --` when needed; keep portable previews on loopback.
 
 On managed Linux, use `sites-preview start` only for requested browser QA. The project's dev script runs Vite and accepts the supervisor's `--host 0.0.0.0 --port 4173 --strictPort` arguments. The internal browser uses `http://terminal.local:4173/`; it is not a user-facing URL. The supervisor owns the preview lifecycle. The ignored local profile survives the supervisor's cleared process environment.
 
@@ -133,7 +148,7 @@ The portable profile simulates ChatGPT sign-in only for loopback development req
 
 The Worker uses `vinext/server/fetch-handler`, including Vinext's config-aware image handling. After building, `npm start` runs that Worker locally through Wrangler on `127.0.0.1`, sharing `.wrangler/state` with dev preview and local D1 migrations; it does not deploy the site or simulate sign-in. Use the URL printed by the server. Pass `npm start -- --port <port>` to select a different built-preview port.
 
-Local previews use Miniflare's placeholder `Request.cf` metadata without a network lookup. Set `CLOUDFLARE_CF_FETCH_ENABLED=true` to opt into fetching preview metadata; this setting does not change hosted request metadata.
+Local Worker previews use Miniflare's placeholder `Request.cf` metadata without a network lookup. Set `CLOUDFLARE_CF_FETCH_ENABLED=true` to opt into fetching preview metadata; this setting does not change hosted request metadata.
 
 Local tool usage metrics are disabled by default. Set `WRANGLER_SEND_METRICS=true` to opt in.
 
@@ -142,7 +157,7 @@ Local tool usage metrics are disabled by default. Set `WRANGLER_SEND_METRICS=tru
 - edit site code under `app/`
 - `app/chatgpt-auth.ts` provides optional dispatch-owned ChatGPT sign-in helpers
 - `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
+- `vite.config.ts` configures declared bindings for the Worker runtime and uses the Node runtime for portable robot development
 - `db/index.ts` reads the D1 binding from the Cloudflare Worker environment
 - `db/schema.ts` starts intentionally empty
 - `@cloudflare/workers-types` provides Worker types; `cloudflare-env.d.ts` declares optional `DB`/`BUCKET` bindings—update these declarations if binding names change

@@ -23,13 +23,17 @@ def test_virtual_lab_drives_scans_and_runs_a_route(tmp_path):
     store = Store(tmp_path)
     controller = Controller(robot, store)
     controller.map_id = 'virtual-workshop-alpha'
-    controller.execute(Command(id='claim', action='claim', source='mission'), 'operator')
+    def send(command):
+        proof = controller.issue_permit('operator');proof.pop('expires_in_ms')
+        seq = controller.command_sequences.get('operator', 0) + 1
+        controller.execute(command.model_copy(update={**proof, 'seq':seq}), 'operator')
+    send(Command(id='claim', action='claim', source='mission'))
     initial = robot.snapshot()
     assert initial['navigation_ready'] and len(initial['scan']['points']) > 20
-    controller.execute(Command(id='home', action='home_set', source='mission'), 'operator')
+    send(Command(id='home', action='home_set', source='mission'))
     target = Point(x=-1.65, y=1.25, name='Checkpoint 1')
     mission = Mission(name='Smoke route', map_id=controller.map_id, points=[target], return_home=True)
-    controller.execute(Command(id='run', action='mission', source='mission', mission=mission), 'operator')
+    send(Command(id='run', action='mission', source='mission', mission=mission))
     wait_for(lambda: controller.state == 'idle', controller)
     final = robot.snapshot()
     assert math.hypot(final['pose']['x'] - initial['pose']['x'], final['pose']['y'] - initial['pose']['y']) < .12

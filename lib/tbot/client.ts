@@ -1,5 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { gatewayFetch, websocketUrl } from "./transport";
+import { createCommandProof, type CommandProof } from "./command-proof";
 export type Pose = {
   x: number;
   y: number;
@@ -76,7 +78,10 @@ export type DeviceSession = {
 };
 export type Telemetry = {
   mode: string;
-  requested_mode?: "simulation" | "hardware";
+  requested_mode?: "simulation" | "hardware" | "direct_usb";
+  authority?: boolean;
+  armed?: boolean;
+  proof?: CommandProof;
   scenario?: string;
   state: string;
   status: string;
@@ -130,7 +135,13 @@ export function useGateway(role: "cockpit" | "tablet" = "cockpit", pair = "") {
     [telemetry, setTelemetry] = useState<Telemetry | null>(null),
     [library, setLibrary] = useState<Library>(empty),
     [message, setMessage] = useState("Connecting to local gateway…"),
-    [token, setToken] = useState("");
+    [token, setToken] = useState(""),
+    [authority, setAuthority] = useState(false);
+  const protocol = useRef(createCommandProof());
+  const controlVersion = useCallback(() => protocol.current.version(), []);
+  const ingest = useCallback((data: {proof?: CommandProof; authority?: boolean}) => {
+    if (protocol.current.accept(data.proof) && typeof data.authority === "boolean") setAuthority(data.authority);
+  }, []);
   const ws = useRef<WebSocket | null>(null),
     pending = useRef(
       new Map<
@@ -180,35 +191,55 @@ export function useGateway(role: "cockpit" | "tablet" = "cockpit", pair = "") {
       try {
         const query = new URLSearchParams({ role });
         if (pair) query.set("pair", pair);
-        const res = await fetch(`${API}/session?${query}`, { method: "POST" });
+        const savedKey = `tbot-tablet-session:${API}:${pair}`;
+        let saved = '';
+        try { if (role === 'tablet') saved = sessionStorage.getItem(savedKey) || ''; } catch {}
+        let res = saved
+          ? await gatewayFetch(`${API}/session/resume`, { method: 'POST', headers: { Authorization: 'Bearer ' + saved } })
+          : await gatewayFetch(`${API}/session?${query}`, { method: "POST" });
+        if (saved && res.status === 401) {
+          try { sessionStorage.removeItem(savedKey); } catch {}
+          res = await gatewayFetch(`${API}/session?${query}`, { method: "POST" });
+        }
         if (!res.ok) {
           const failure = await res.json().catch(() => ({})) as {detail?:string};
           throw Error(failure.detail || "Local session rejected");
         }
-        const { token: t } = (await res.json()) as { token: string };
+        const session = (await res.json()) as {token:string; proof:CommandProof};
+        const t = session.token;
         if (dead) return;
+        protocol.current.reset(); ingest({...session, authority:false});
+        if (role === 'tablet') { try { sessionStorage.setItem(savedKey, t); } catch {} }
         setToken(t);
         if (role === "tablet") {
           setConnected(true);
           setMessage("Tablet command link connected.");
-          heartbeat = setInterval(async () => {
+          const beat = async () => {
+            if (dead) return;
             try {
-              const response=await fetch(`${API}/heartbeat`,{method:"POST",headers:{Authorization:"Bearer "+t}});
+              const response=await gatewayFetch(`${API}/heartbeat`,{method:"POST",headers:{Authorization:"Bearer "+t}}, 900);
               if(!response.ok)throw Error("Tablet heartbeat rejected");
+              const state = await response.json() as {proof?:CommandProof; authority?:boolean};
+              if (!dead) ingest(state);
+              if (!dead) heartbeat = setTimeout(beat, 500);
             } catch {
-              clearInterval(heartbeat);setConnected(false);setToken("");
-              if(!dead)retry=setTimeout(connect,1000);
+              if (dead) return;
+              setConnected(false);setToken("");setAuthority(false);protocol.current.reset();
+              retry=setTimeout(connect,1000);
             }
-          },500);
+          };
+          // A single outstanding heartbeat prevents competing reconnects on
+          // slow Wi-Fi. Timers resume only after the previous request finishes.
+          heartbeat = setTimeout(beat, 500);
           return;
         }
-        socket = new WebSocket(API.replace(/^http/, "ws") + "/ws");
+        socket = new WebSocket(websocketUrl(API, "/ws"));
         ws.current = socket;
         socket.onopen = () => {
           socket?.send(JSON.stringify({ token: t }));
           setConnected(true);
           setMessage(
-            "Gateway connected. Robot movement requires live sensors.",
+            "Gateway connected. Select the output mode, then explicitly take control.",
           );
           heartbeat = setInterval(() => {
             if (socket?.readyState === WebSocket.OPEN)
@@ -217,6 +248,7 @@ export function useGateway(role: "cockpit" | "tablet" = "cockpit", pair = "") {
         };
         socket.onmessage = (e) => {
           const data = JSON.parse(e.data);
+          ingest(data);
           if (data.type === "telemetry")
             setTelemetry((previous) => ({ ...previous, ...data }));
           if (data.type === "ack") {
@@ -227,12 +259,13 @@ export function useGateway(role: "cockpit" | "tablet" = "cockpit", pair = "") {
               if (data.ok) p.resolve(data);
               else p.reject(Error(data.error));
             }
-            setMessage(data.ok ? `${data.action} acknowledged` : data.error);
+            setMessage(data.ok ? `${data.action} accepted by backend · ${data.output || 'gateway'}` : data.error);
           }
         };
         socket.onclose = () => {
           clearInterval(heartbeat);
           setConnected(false);
+          setAuthority(false);protocol.current.reset();
           setToken("");
           setTelemetry(null);
           for (const p of pending.current.values()) {
@@ -269,13 +302,15 @@ export function useGateway(role: "cockpit" | "tablet" = "cockpit", pair = "") {
   }, [token, refresh]);
   const send = useCallback(
     (command: Record<string, unknown>) => {
+      if (command.action === "stop" || command.action === "cancel") setAuthority(false);
       if(role==="tablet") return (async()=>{
         if(!token)throw Error("Tablet command link disconnected");
         const id=crypto.randomUUID();
-        const response=await fetch(`${API}/command`,{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+token},body:JSON.stringify({...command,id})});
-        const data=await response.json() as {detail?:string;action?:string;[key:string]:unknown};
+        const response=await gatewayFetch(`${API}/command`,{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+token},body:JSON.stringify({...protocol.current.stamp(command),id})});
+        const data=await response.json() as {detail?:string;action?:string;proof?:CommandProof;authority?:boolean;[key:string]:unknown};
+        ingest(data);
         if(!response.ok)throw Error(data.detail||"Command rejected");
-        setMessage(`${data.action} acknowledged`);return data;
+        setMessage(`${data.action} accepted by backend · ${data.output || 'gateway'}`);return data;
       })();
       return new Promise((resolve, reject) => {
         const socket = ws.current;
@@ -289,14 +324,15 @@ export function useGateway(role: "cockpit" | "tablet" = "cockpit", pair = "") {
           reject(Error("Command acknowledgement timed out"));
         }, 2500);
         pending.current.set(id, { resolve, reject, timer });
-        socket.send(JSON.stringify({ ...command, id }));
+        try { socket.send(JSON.stringify({ ...protocol.current.stamp(command), id })); }
+        catch(error) { clearTimeout(timer); pending.current.delete(id); reject(error); }
       });
     },
     [role,token],
   );
   const sendDeviceState = useCallback((state: Record<string, unknown>) => {
     if(role==="tablet"&&token){
-      void fetch(`${API}/device-state`,{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+token},body:JSON.stringify(state)}).catch(()=>{});return;
+      void gatewayFetch(`${API}/device-state`,{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+token},body:JSON.stringify(state)}, 900).catch(()=>{});return;
     }
     const socket = ws.current;
     if (socket?.readyState === WebSocket.OPEN)
@@ -304,6 +340,8 @@ export function useGateway(role: "cockpit" | "tablet" = "cockpit", pair = "") {
   }, [role,token]);
   return {
     connected,
+    authority,
+    controlVersion,
     telemetry,
     library,
     token,

@@ -1,8 +1,10 @@
 fastapi>=0.115,<1
 uvicorn[standard]>=0.30,<1
-vosk==0.3.45
+vosk==0.3.44; sys_platform == 'darwin'
+vosk==0.3.45; sys_platform != 'darwin'
 numpy>=1.26,<3
 httpx>=0.27,<1
 pytest>=8,<9
 qrcode>=7,<9
 feetech-servo-sdk==1.0.0
+pyserial>=3.5,<4

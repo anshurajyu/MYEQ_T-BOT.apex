@@ -22,8 +22,9 @@ from pydantic import ValidationError
 from .domain import Command, Mission, HardwareProfile, PlanRequest, ModeRequest, RunnerRequest, RunnerRootRequest, map_version, parse_voice
 from .planner import plan_route
 from .storage import Store
-from .controller import Controller, OfflineAdapter
+from .controller import Controller, OfflineAdapter, DirectUsbAdapter
 from .simulator import VirtualAdapter
+from .network import secure_network
 
 ROOT=Path(os.environ.get('TBOT_DATA',str(Path(__file__).resolve().parents[1]/'.tbot-data')))
 store=Store(ROOT)
@@ -41,110 +42,43 @@ if isinstance(adapter,VirtualAdapter):
 ORIGINS=['http://localhost:5173','http://127.0.0.1:5173','http://localhost:3000','http://127.0.0.1:3000']
 sessions={};acks={};pairings={};device_state={};voice_model=None
 runner_jobs={};runner_lock=threading.RLock()
-class DirectServoBridge:
-    """Today's PC-attached ST3215 path; the bridge has its own 300 ms stop watchdog."""
-    def __init__(self):self.process=None;self.writer=None;self.enabled=False;self.error='Direct servo control is off';self.fifo=Path(f'/tmp/tbot-servo-{os.getuid()}.fifo')
-    def enable(self):
-        if self.process and self.process.poll() is None:self.enabled=True;return
-        if not Path('/dev/ttyACM0').exists():raise ValueError('Waveshare servo adapter not found at /dev/ttyACM0')
-        desktop=Path.home()/'Desktop/MYEQ_T-BOT.apex'
-        python=desktop/'.venv/bin/python' if (desktop/'.venv/bin/python').exists() else Path.home()/'tbot_servo/venv/bin/python'
-        script=Path(__file__).resolve().parents[1]/'robot-code/dashboard_wasd_relay.py'
-        if not python.exists():raise ValueError(f'Servo Python environment missing at {python}')
-        if self.fifo.exists():self.fifo.unlink()
-        os.mkfifo(self.fifo,0o600)
-        self.process=subprocess.Popen(['/usr/bin/gnome-terminal','--wait','--title=T-Bot Direct Servo','--',str(python),'-u',str(script),str(self.fifo)],cwd=str(script.parent))
-        for _ in range(30):
-            if self.process.poll() is not None:break
-            try:
-                fd=os.open(self.fifo,os.O_WRONLY|os.O_NONBLOCK);self.writer=os.fdopen(fd,'w',buffering=1);break
-            except OSError:time.sleep(.05)
-        if self.process.poll() is not None:
-            self.error='Direct servo terminal could not start';raise ValueError(self.error)
-        if not self.writer:
-            self.process.terminate();raise ValueError('Direct servo terminal opened but its command relay did not connect')
-        self.enabled=True;self.error='Servo connected — command terminal is running'
-    def send(self,linear=0.,angular=0.):
-        if not self.enabled or not self.process or self.process.poll() is not None:return
-        try:self.writer.write(json.dumps({'linear':linear,'angular':angular})+'\n');self.writer.flush()
-        except (BrokenPipeError,OSError):self.enabled=False;self.error='Servo bridge disconnected'
-    def stop(self):self.send();
-    def disable(self):
-        self.stop();self.enabled=False
-        if self.process and self.process.poll() is None:
-            try:self.writer.write('{"action":"quit"}\n');self.writer.flush();self.process.wait(timeout=1)
-            except Exception:self.process.terminate()
-        if self.writer:
-            try:self.writer.close()
-            except OSError:pass
-        self.writer=None;self.process=None
-        if self.fifo.exists():self.fifo.unlink()
-        self.error='Direct servo control is off'
+pair_failures={}
+PROTOCOL_VERSION=2
+PROJECT_ROOT=Path(__file__).resolve().parents[1]
+from .usb_transport import DirectServoBridge
 direct_servo=DirectServoBridge()
+control.motion_output=lambda linear,angular:direct_servo.send(linear,angular)
 
 class WasdTerminal:
-    """Launch the user's interactive WASD controller in a real local terminal."""
-    def __init__(self):
-        self.process=None
-        self.error='WASD terminal is not running'
-    def command(self):
-        # Prefer the exact controller and virtual environment already proven on
-        # this machine. Keep the dashboard workspace copy as a portable fallback.
-        desktop=Path.home()/'Desktop/MYEQ_T-BOT.apex'
-        workspace=Path(__file__).resolve().parents[1]
-        script=desktop/'t-bot_wasd.py' if (desktop/'t-bot_wasd.py').exists() else workspace/'robot-code/t-bot_wasd.py'
-        desktop_python=desktop/'.venv/bin/python'
-        servo_python=Path.home()/'tbot_servo/venv/bin/python'
-        python=desktop_python if desktop_python.exists() else servo_python
-        return python,script
+    """Keep the legacy diagnostic endpoint without creating a second motor owner."""
     def status(self):
-        running=bool(self.process and self.process.poll() is None)
-        if self.process and not running and self.error=='WASD terminal started':
-            self.error=f'WASD terminal exited with code {self.process.returncode}'
-        python,script=self.command()
-        return {'running':running,'error':self.error,'path':str(script),'python':str(python)}
-    def start(self):
-        if self.process and self.process.poll() is None:return self.status()
-        if not Path('/dev/ttyACM0').exists():raise ValueError('Connect the Waveshare servo adapter first: /dev/ttyACM0 is not present')
-        python,script=self.command()
-        terminal=Path('/usr/bin/gnome-terminal')
-        if not python.exists():raise ValueError(f'Servo Python environment missing at {python}')
-        if not script.exists():raise ValueError(f'WASD controller missing at {script}')
-        if not terminal.exists():raise ValueError('GNOME Terminal is not installed on this computer')
-        # --wait keeps this process attached to the Python program, so the
-        # dashboard can report whether the terminal controller is still alive.
-        self.process=subprocess.Popen([
-            str(terminal),'--wait','--title=T-Bot WASD Servo Control','--',
-            str(python),'-u',str(script)
-        ],cwd=str(script.parent))
-        time.sleep(.25)
-        if self.process.poll() is not None:
-            self.error=f'Terminal failed to start (exit {self.process.returncode})'
-            raise ValueError(self.error)
-        self.error='WASD terminal started'
-        return self.status()
-    def stop(self):
-        if self.process and self.process.poll() is None:self.process.terminate()
-        self.process=None;self.error='WASD terminal is not running'
+        return {'running':False,'error':'Use Drive → Take keyboard control through the managed USB relay, or run the standalone controller after disconnecting the relay.','path':str(PROJECT_ROOT/'robot-code/t-bot_wasd.py'),'python':os.environ.get('TBOT_SERVO_PYTHON',sys.executable)}
+    def start(self):raise ValueError(self.status()['error'])
+    def stop(self):pass
 
 wasd_terminal=WasdTerminal()
 DEFAULT_PROFILE=HardwareProfile().model_dump()
 if not store.get('settings','hardware'):store.put('settings','hardware',DEFAULT_PROFILE)
 
 def trusted_origin(origin):
-    return origin in ORIGINS or bool(origin and (re.fullmatch(r'https://[a-z0-9-]+(?:\.[a-z0-9-]+)*\.ts\.net',origin) or re.fullmatch(r'http://(?:10|127|192\.168)\.[0-9.]+:(?:3000|5173)',origin)))
+    return origin in ORIGINS or bool(origin and origin == secure_network()['public_url'])
 async def ticker():
     while True:
         try:
             control.tick()
             if hasattr(adapter,'authorize'):adapter.authorize('navigation' if control.state=='navigating' else 'manual' if control.state in ('manual','test','timed') else 'stop')
-        except Exception as e:control.stop('Controller error: '+str(e))
+        except Exception as e:
+            try:control.stop('Controller error: '+str(e))
+            except Exception:pass  # stop already clears motion and records the output error
         await asyncio.sleep(.05)
 @asynccontextmanager
 async def lifespan(app):
     task=asyncio.create_task(ticker())
     yield
-    control.stop('Gateway shutdown');direct_servo.disable();wasd_terminal.stop();task.cancel()
+    task.cancel();await asyncio.gather(task,return_exceptions=True)
+    try:control.stop('Gateway shutdown')
+    except Exception:pass  # still close child processes after a failed motor stop
+    direct_servo.disable();wasd_terminal.stop()
     if hasattr(adapter,'close'):adapter.close()
 app=FastAPI(title='T-bot local ROS gateway',lifespan=lifespan)
 app.add_middleware(CORSMiddleware,allow_origin_regex=r'http://(localhost|127\.0\.0\.1|10\.[0-9.]+|192\.168\.[0-9.]+):(3000|5173)|https://[a-z0-9-]+(?:\.[a-z0-9-]+)*\.ts\.net',allow_methods=['GET','POST'],allow_headers=['Authorization','Content-Type'])
@@ -183,6 +117,9 @@ def start_runner(job):
         with runner_lock:runner_output(job)
 def readiness():
     snap=adapter.snapshot();p=profile();virtual=snap.get('mode')=='virtual-lab';missing=[] if virtual else p.missing_calibration()
+    if snap.get('mode')=='direct-usb':
+        ready=direct_servo.status()['enabled']
+        return {'ready':ready,'physical_lock':not ready,'transport':'DIRECT_USB','checks':{'motor_transport':ready},'missing_calibration':[],'profile':p.model_dump(),'navigation_ready':False}
     checks={
         'lidar':snap.get('scan_age') is not None and snap.get('scan_age',99)<.75,
         'odometry':snap.get('odom_age') is not None and snap.get('odom_age',99)<.5,
@@ -198,9 +135,20 @@ control.physical_readiness=readiness
 
 def set_runtime_mode(mode):
     global adapter,requested_mode
-    if mode==requested_mode:return
+    if mode==requested_mode and not isinstance(adapter,OfflineAdapter) and (mode!='direct_usb' or direct_servo.status()['enabled']):return
     control.stop('Changing robot mode');old=adapter
-    if mode=='simulation':
+    direct_servo.disable()
+    if mode=='direct_usb':
+        if hasattr(old,'close'):old.close()
+        # Never publish ROS velocities while opening the local motor bus.
+        adapter=OfflineAdapter('Connecting direct USB');control.adapter=adapter
+        try:direct_servo.enable()
+        except Exception:
+            requested_mode='direct_usb'
+            raise
+        replacement=DirectUsbAdapter(lambda:direct_servo.status()['enabled'])
+        control.map_id='';control.status='Direct USB ready; explicitly select a controller'
+    elif mode=='simulation':
         replacement=VirtualAdapter();control.map_id='virtual-workshop-alpha';control.status='Virtual robot ready'
     else:
         try:
@@ -209,19 +157,22 @@ def set_runtime_mode(mode):
         except Exception as e:replacement=OfflineAdapter(f'Real robot unavailable: {e}')
         control.status='Waiting for Raspberry Pi ROS 2'
     adapter=replacement;control.adapter=replacement;requested_mode=mode
-    if hasattr(old,'close'):
+    control.stop(control.status + '; explicitly take control')
+    if old is not replacement and mode!='direct_usb' and hasattr(old,'close'):
         try:old.close()
         except Exception:pass
 
 @app.get('/health')
-def health():return {'service':'tbot-gateway','robot':adapter.snapshot()['mode'],'requested_mode':requested_mode,'voice_ready':(ROOT/'models/vosk-model-small-en-us-0.15').exists(),'firebase_configured':bool(store.get('settings','firebase')),'readiness':readiness()}
+def health():return {'instance':{'project_root':str(PROJECT_ROOT),'pid':os.getpid(),'protocol':PROTOCOL_VERSION},'public_url':secure_network()['public_url'],'service':'tbot-gateway','robot':adapter.snapshot()['mode'],'requested_mode':requested_mode,'voice_ready':(ROOT/'models/vosk-model-small-en-us-0.15').exists(),'firebase_configured':bool(store.get('settings','firebase')),'readiness':readiness()}
 @app.get('/mode')
 def get_mode(authorization:str=Header(default='')):bearer(authorization);return {'mode':requested_mode,'effective':adapter.snapshot().get('mode')}
 @app.post('/mode')
-def select_mode(value:ModeRequest,authorization:str=Header(default='')):
+async def select_mode(value:ModeRequest,authorization:str=Header(default='')):
     token=bearer(authorization)
     if sessions[token]['role']!='cockpit':raise HTTPException(403,'Cockpit role required')
-    set_runtime_mode(value.mode);return {'mode':requested_mode,'effective':adapter.snapshot().get('mode'),'readiness':readiness()}
+    try:set_runtime_mode(value.mode)
+    except (ValueError,OSError) as exc:raise HTTPException(422,str(exc))
+    return {'mode':requested_mode,'effective':adapter.snapshot().get('mode'),'readiness':readiness()}
 
 @app.get('/runner/files')
 def runner_files(authorization:str=Header(default='')):
@@ -280,56 +231,69 @@ def runner_stop(run_id:str,authorization:str=Header(default='')):
         runner_output(job)
     return {'stopped':True}
 @app.post('/simulation/reset')
-def simulation_reset(authorization:str=Header(default='')):
+async def simulation_reset(authorization:str=Header(default='')):
     bearer(authorization)
     if not isinstance(adapter,VirtualAdapter):raise HTTPException(409,'Virtual Lab is not active')
     control.stop('Virtual Lab reset');adapter.reset();control.map_id='virtual-workshop-alpha';store.put('settings','map',{'name':control.map_id});return {'reset':True}
-@app.post('/session')
-def session(request:Request,role:str=Query(default='cockpit'),pair:str=Query(default='')):
-    if not trusted_origin(request.headers.get('origin')):raise HTTPException(403,'Untrusted browser origin')
-    if role not in ('cockpit','tablet'):raise HTTPException(400,'Unknown device role')
-    if role=='tablet':
-        entry=pairings.get(pair) or store.get('pairings',pair)
-        if not entry or time.time()>entry['expires_at']:raise HTTPException(403,'Pairing code is invalid or expired. Create a new Tablet link on the laptop.')
-        pairings[pair]=entry
+def new_session(role):
     now=time.monotonic()
     for key in list(sessions):
         if now-sessions[key]['seen']>3600:sessions.pop(key,None);acks.pop(key,None);device_state.pop(key,None)
-    token=secrets.token_urlsafe(32);sessions[token]={'seen':now,'role':role,'connected':False};acks[token]={};device_state[token]={'role':role,'connected':False,'authority':False,'camera':False,'gesture':'stop','confidence':0,'x':.5,'y':.5,'fps':0,'latency_ms':0}
-    # Keep a short-lived pairing code usable for reconnects. Mobile browsers
-    # regularly recreate WebSockets when a camera permission dialog appears;
-    # consuming it on the first connection made the tablet look "disconnected"
-    # even though its camera had already started.
-    return {'token':token,'role':role}
+    token=secrets.token_urlsafe(32);sessions[token]={'seen':now,'role':role,'connected':False};acks[token]={}
+    device_state[token]={'role':role,'connected':False,'authority':False,'camera':False,'gesture':'stop','confidence':0,'x':.5,'y':.5,'fps':0,'latency_ms':0,'last_command':None}
+    return {'token':token,'role':role,'proof':control.issue_permit(token),'authority':False,'armed':False}
+
+@app.post('/session')
+async def session(request:Request,role:str=Query(default='cockpit'),pair:str=Query(default='')):
+    if not trusted_origin(request.headers.get('origin')):raise HTTPException(403,'Untrusted browser origin')
+    if role not in ('cockpit','tablet'):raise HTTPException(400,'Unknown device role')
+    if role=='tablet':
+        key=request.client.host if request.client else 'local'
+        now=time.monotonic();recent=[when for when in pair_failures.get(key,[]) if now-when<60]
+        pair_failures[key]=recent
+        if len(recent)>=10:raise HTTPException(429,'Too many pairing attempts. Wait one minute.')
+        entry=pairings.get(pair)
+        if not entry or time.time()>entry['expires_at'] or entry.get('used'):
+            recent.append(now)
+            raise HTTPException(403,'Pairing code is invalid, used or expired. Create a new Tablet link on the laptop.')
+        entry['used']=True
+    return new_session(role)
+
+@app.post('/session/resume')
+async def resume_session(request:Request,authorization:str=Header(default='')):
+    if not trusted_origin(request.headers.get('origin')):raise HTTPException(403,'Untrusted browser origin')
+    previous=bearer(authorization);role=sessions[previous]['role']
+    if control.owner==previous:control.stop('Tablet reconnected; explicit re-arm required')
+    sessions.pop(previous,None);acks.pop(previous,None);device_state.pop(previous,None)
+    return new_session(role)
 
 @app.post('/pairing')
-def create_pairing(request:Request,authorization:str=Header(default='')):
+async def create_pairing(request:Request,authorization:str=Header(default='')):
     token=bearer(authorization)
     if sessions[token]['role']!='cockpit':raise HTTPException(403,'Cockpit role required')
+    network=secure_network();base=network['public_url']
+    if not base:raise HTTPException(503,network['reason'])
     code=f'{secrets.randbelow(1_000_000):06d}'
-    base=os.environ.get('TBOT_PUBLIC_URL') or request.headers.get('origin') or 'http://127.0.0.1:5173'
-    if re.match(r'http://(localhost|127\.0\.0\.1)',base):
-        try:
-            probe=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);probe.connect(('1.1.1.1',80));host=probe.getsockname()[0];probe.close();base=f'http://{host}:5173'
-        except OSError:pass
-    expires_seconds=1800
-    url=f'{base}/tablet?pair={code}';entry={'expires_at':time.time()+expires_seconds,'url':url};pairings[code]=entry;store.put('pairings',code,entry)
-    return {'code':code,'expires_seconds':expires_seconds,'url':url,'secure':base.startswith('https://') or 'localhost' in base}
+    while code in pairings:code=f'{secrets.randbelow(1_000_000):06d}'
+    expires_seconds=300
+    url=f'{base}/tablet?pair={code}';pairings[code]={'expires_at':time.time()+expires_seconds,'url':url,'creator':token,'used':False}
+    return {'code':code,'expires_seconds':expires_seconds,'url':url,'secure':True}
 
 @app.get('/direct-servo')
 def direct_servo_status(authorization:str=Header(default='')):
-    bearer(authorization);return {'enabled':direct_servo.enabled,'error':direct_servo.error,'port':'/dev/ttyACM0'}
+    bearer(authorization);return direct_servo.status()
 
 @app.post('/direct-servo')
-def set_direct_servo(request:Request,authorization:str=Header(default='')):
+async def set_direct_servo(request:Request,authorization:str=Header(default='')):
     token=bearer(authorization)
     if sessions[token]['role']!='cockpit':raise HTTPException(403,'Cockpit role required')
     enabled=request.query_params.get('enabled','false').lower()=='true'
     try:
-        if enabled:direct_servo.enable()
-        else:direct_servo.disable()
-        return {'enabled':direct_servo.enabled,'error':direct_servo.error,'port':'/dev/ttyACM0'}
-    except ValueError as e:raise HTTPException(422,str(e))
+        set_runtime_mode('direct_usb' if enabled else 'simulation')
+        return direct_servo.status()
+    except (ValueError,OSError) as e:
+        direct_servo.error=str(e)
+        raise HTTPException(422,str(e))
 
 @app.get('/wasd-terminal')
 def wasd_terminal_status(authorization:str=Header(default='')):
@@ -346,9 +310,10 @@ def set_wasd_terminal(request:Request,authorization:str=Header(default='')):
     except ValueError as e:raise HTTPException(422,str(e))
 
 @app.get('/pairing/qr.svg')
-def pairing_qr(code:str,token:str):
-    auth(token);entry=pairings.get(code) or store.get('pairings',code)
-    if not entry or time.time()>entry['expires_at']:raise HTTPException(404,'Pairing expired')
+def pairing_qr(code:str,authorization:str=Header(default='')):
+    token=bearer(authorization);entry=pairings.get(code)
+    if entry and entry.get('creator')!=token:raise HTTPException(403,'This pairing belongs to another cockpit')
+    if not entry or entry.get('used') or time.time()>entry['expires_at']:raise HTTPException(404,'Pairing expired or used')
     try:
         import qrcode
         import qrcode.image.svg
@@ -363,50 +328,66 @@ def devices(authorization:str=Header(default='')):
     now=time.monotonic();items=[]
     for key,state in device_state.items():
         if not sessions.get(key):continue
-        age=now-sessions[key]['seen'];items.append({'id':key[:8],**state,'connected':bool(state.get('connected') and age<2.0),'authority':bool(state.get('authority') and age<2.0),'heartbeat_age':round(age,3)})
+        age=now-sessions[key]['seen'];items.append({'id':key[:8],**state,'connected':bool(state.get('connected') and age<2.0),'authority':bool(control.owner==key and control.armed and age<2.0),'heartbeat_age':round(age,3)})
     return {'devices':items}
 
 @app.get('/telemetry')
-def telemetry(authorization:str=Header(default='')):
-    bearer(authorization);return control.snapshot()
+async def telemetry(authorization:str=Header(default='')):
+    token=bearer(authorization);return {**control.snapshot(),'proof':control.issue_permit(token),'authority':control.owner==token and control.armed,'requested_mode':requested_mode}
 
 @app.post('/heartbeat')
 async def http_heartbeat(authorization:str=Header(default='')):
-    token=bearer(authorization);control.heartbeat(token);device_state[token]['connected']=True;device_state[token]['authority']=control.owner==token;return {'ok':True}
+    token=bearer(authorization);control.heartbeat(token);device_state[token]['connected']=True;device_state[token]['authority']=control.owner==token and control.armed;return {'ok':True,'proof':control.issue_permit(token),'authority':control.owner==token and control.armed,'armed':control.armed,'source':control.source,'status':control.status,'transport':requested_mode}
 
 @app.post('/device-state')
 async def http_device_state(request:Request,authorization:str=Header(default='')):
     token=bearer(authorization);payload=await request.json();state=device_state[token]
     for key in ('camera','gesture','confidence','x','y','fps','latency_ms'):
         if key in payload:state[key]=payload[key]
-    state['connected']=True;state['authority']=control.owner==token
+    state['connected']=True;state['authority']=control.owner==token and control.armed
     return {'ok':True,'authority':state['authority']}
 
 @app.post('/gesture/activate')
-async def activate_gesture(authorization:str=Header(default='')):
+async def activate_gesture(device:str=Query(default=''),authorization:str=Header(default='')):
     cockpit=bearer(authorization)
     if sessions[cockpit]['role']!='cockpit':raise HTTPException(403,'Laptop cockpit required')
     now=time.monotonic()
     candidates=[key for key,value in sessions.items() if value['role']=='tablet' and device_state.get(key,{}).get('connected') and now-value['seen']<2]
     if not candidates:raise HTTPException(409,'No live tablet is connected')
-    tablet=max(candidates,key=lambda key:sessions[key]['seen'])
-    control.stop('Gesture control selected');control.owner=tablet;control.source='gesture';control.last_heartbeat=now
-    for key,state in device_state.items():state['authority']=key==tablet
-    return {'active':True,'device':tablet[:8]}
+    matches=[key for key in candidates if key[:8]==device] if device else candidates
+    if len(matches)!=1:raise HTTPException(409,'Select the intended connected tablet explicitly')
+    tablet=matches[0]
+    control.stop('Gesture control selected; phone must explicitly re-arm');control.owner=tablet;control.source='gesture';control.last_heartbeat=now
+    for state in device_state.values():state['authority']=False
+    return {'selected':True,'active':False,'armed':False,'device':tablet[:8]}
+
+def command_result(payload,token):
+    """One validation/ownership/output path for HTTP tablets and WebSocket controls."""
+    command_id=payload.get('id','invalid') if isinstance(payload,dict) else 'invalid'
+    if not isinstance(command_id,str):command_id='invalid'
+    if isinstance(payload,dict) and payload.get('action') not in ('stop','cancel') and command_id in acks[token]:
+        return {**acks[token][command_id],'proof':control.issue_permit(token),'authority':control.owner==token and control.armed,'armed':control.armed,'duplicate':True,'bridge_written':False,'hardware_emitted':False}
+    try:
+        c=Command.model_validate(payload)
+        if direct_servo.enabled and c.action in ('distance','angle','mission','home_go','explore','resume','retry','skip'):
+            raise ValueError('Direct servo control has no measured robot odometry. Use forward, backward, left, right or stop; disable Direct Servo and connect ROS for measured moves and missions.')
+        if sessions[token]['role']=='tablet' and c.source!='gesture' and c.action not in ('stop','cancel'):raise ValueError('Tablet commands must use gesture control')
+        control.execute(c,token)
+        device_state[token]['connected']=True;device_state[token]['authority']=control.owner==token and control.armed
+        ack={'type':'ack','id':c.id,'ok':True,'action':c.action,'output':adapter.snapshot().get('mode'),'bridge_written':requested_mode=='direct_usb' and direct_servo.enabled and c.action in ('drive','stop','cancel'),'hardware_emitted':False}
+        device_state[token]['last_command']={'action':c.action,'acknowledged':True,'at':time.time(),'bridge_written':ack['bridge_written']}
+        if c.action!='drive':control.log('command',f'{c.source}: {c.action}')
+    except (ValueError,ValidationError) as e:ack={'type':'ack','id':command_id,'ok':False,'error':str(e)}
+    ack.update(proof=control.issue_permit(token),authority=control.owner==token and control.armed,armed=control.armed)
+    acks[token][command_id]=ack
+    if len(acks[token])>200:acks[token].pop(next(iter(acks[token])))
+    return ack
 
 @app.post('/command')
 async def http_command(request:Request,authorization:str=Header(default='')):
-    token=bearer(authorization);payload=await request.json()
-    try:
-        c=Command.model_validate(payload)
-        if c.action=='claim' and sessions[token]['role']=='cockpit' and control.owner not in (None,token):
-            control.stop('Laptop control takeover');control.owner=None
-        control.execute(c,token)
-        if c.action=='drive':direct_servo.send(c.linear,c.angular)
-        elif c.action in ('stop','release','claim','cancel'):direct_servo.stop()
-        device_state[token]['connected']=True;device_state[token]['authority']=control.owner==token
-        return {'type':'ack','id':c.id,'ok':True,'action':c.action}
-    except (ValueError,ValidationError) as e:raise HTTPException(409,str(e))
+    token=bearer(authorization);payload=await request.json();ack=command_result(payload,token)
+    if not ack['ok']:return Response(json.dumps({**ack,'detail':ack['error']}),status_code=409,media_type='application/json')
+    return ack
 
 @app.get('/readiness')
 def get_readiness(authorization:str=Header(default='')):bearer(authorization);return readiness()
@@ -498,27 +479,13 @@ async def websocket(ws:WebSocket):
                     state=device_state[token]
                     for key in ('camera','gesture','confidence','x','y','fps','latency_ms'):
                         if key in payload:state[key]=payload[key]
-                    state['authority']=control.owner==token
+                    state['authority']=control.owner==token and control.armed
                     await ws.send_json({'type':'device_ack','at':time.time()});continue
-                command_id=payload.get('id','invalid')
-                if command_id in acks[token]:await ws.send_json(acks[token][command_id]);continue
-                try:
-                    c=Command.model_validate(payload)
-                    if c.action=='claim' and sessions[token]['role']=='cockpit' and control.owner not in (None,token):
-                        control.stop('Laptop control takeover');control.owner=None
-                    control.execute(c,token)
-                    if c.action=='drive':direct_servo.send(c.linear,c.angular)
-                    elif c.action in ('stop','release','claim','cancel'):direct_servo.stop()
-                    ack={'type':'ack','id':c.id,'ok':True,'action':c.action};
-                    if c.action!='drive':control.log('command',f'{c.source}: {c.action}')
-                except (ValueError,ValidationError) as e:ack={'type':'ack','id':command_id,'ok':False,'error':str(e)}
-                acks[token][command_id]=ack
-                if len(acks[token])>200:acks[token].pop(next(iter(acks[token])))
-                await ws.send_json(ack)
+                await ws.send_json(command_result(payload,token))
         async def send():
             last_map=None
             while True:
-                snapshot=control.snapshot();snapshot['readiness']=readiness();snapshot['requested_mode']=requested_mode;grid=snapshot.get('map');stamp=(grid.get('stamp'),grid.get('received')) if grid else None
+                snapshot=control.snapshot();snapshot['proof']=control.issue_permit(token);snapshot['authority']=control.owner==token and control.armed and control.armed;snapshot['readiness']=readiness();snapshot['requested_mode']=requested_mode;grid=snapshot.get('map');stamp=(grid.get('stamp'),grid.get('received')) if grid else None
                 if grid and stamp==last_map:snapshot.pop('map',None)
                 last_map=stamp
                 await ws.send_json({'type':'telemetry',**snapshot});await asyncio.sleep(.2)
@@ -533,7 +500,7 @@ async def websocket(ws:WebSocket):
     finally:
         if token:
             sessions.get(token,{}).update(connected=False);device_state.get(token,{}).update(connected=False,authority=False,camera=False,gesture='stop')
-            if control.owner==token:control.stop('Control socket disconnected');control.owner=None;direct_servo.stop()
+            if control.owner==token:control.stop('Control socket disconnected');control.owner=None
 
 @app.websocket('/voice/live')
 async def live_voice(ws:WebSocket):
@@ -547,9 +514,11 @@ async def live_voice(ws:WebSocket):
         path=ROOT/'models/vosk-model-small-en-us-0.15'
         if not path.exists():await ws.send_json({'error':'Offline voice model missing'});return
         if voice_model is None:voice_model=await asyncio.to_thread(Model,str(path))
-        rec=KaldiRecognizer(voice_model,16000);await ws.send_json({'ready':True});count=0;started=time.monotonic()
-        while time.monotonic()-started<20:
-            chunk=await asyncio.wait_for(ws.receive_bytes(),3);count+=len(chunk)
+        rec=KaldiRecognizer(voice_model,16000);await ws.send_json({'ready':True});count=0;started=None
+        while started is None or time.monotonic()-started<20:
+            chunk=await asyncio.wait_for(ws.receive_bytes(),30 if started is None else 3)
+            if started is None:started=time.monotonic()
+            count+=len(chunk)
             if count>640000 or len(chunk)>32000:break
             auth(token)
             complete=await asyncio.to_thread(rec.AcceptWaveform,chunk)
@@ -557,6 +526,9 @@ async def live_voice(ws:WebSocket):
             if text.strip() in ('stop','robot stop','emergency stop','cancel mission'):
                 control.stop('Voice stop');await ws.send_json({'stopped':True,'transcript':text})
     except (WebSocketDisconnect,asyncio.TimeoutError,HTTPException):pass
+    except Exception as e:
+        try:await ws.send_json({'error':'Offline voice recognition unavailable: '+str(e)})
+        except (RuntimeError,WebSocketDisconnect):pass
     finally:
         try:await ws.close()
-        except RuntimeError:pass
+        except (RuntimeError,WebSocketDisconnect):pass

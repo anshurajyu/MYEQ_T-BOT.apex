@@ -11,11 +11,12 @@ if [[ "$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys; prin
 fi
 sudo systemctl start tbot-sensors tbot-base tbot-guard tbot-navigation tbot-gateway tbot-dashboard
 name="$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
-sudo tailscale serve reset
-sudo tailscale serve --bg --https=443 / http://127.0.0.1:8787
-sudo tailscale serve --bg --https=443 /api http://127.0.0.1:8001
+sudo tailscale serve --bg --https=443 --set-path=/ http://127.0.0.1:8787
+# Serve removes the /api mount prefix before forwarding to the gateway.
+sudo tailscale serve --bg --https=443 --set-path=/api http://127.0.0.1:8001
 link="https://${name}"
-sudo systemctl set-environment TBOT_PUBLIC_URL="${link}"
+# Open this HTTPS origin before pairing: the gateway uses the request Origin
+# to create the tablet URL. No global systemd environment change is needed.
 echo "T-bot cockpit: ${link}/mission-control"
 echo "Tablet controller: create a QR code inside ${link}/mission-control"
 echo "Project: ${root}"

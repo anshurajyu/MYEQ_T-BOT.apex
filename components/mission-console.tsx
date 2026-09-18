@@ -49,12 +49,14 @@ import {
   type DeviceSession,
 } from "@/lib/tbot/client";
 import { recordVoice } from "@/lib/tbot/audio";
+import { websocketUrl } from "@/lib/tbot/transport";
+import { createVoiceIntent, createVoiceSession, openVoiceLink, type VoicePhase } from "@/lib/tbot/voice-session";
 const activities = [
   { name: "Drive", icon: Gamepad2, caption: "Teach the machine." },
   { name: "Explore", icon: Radar, caption: "Map the unknown." },
   { name: "Missions", icon: Route, caption: "Give chaos a route." },
   { name: "Gesture Control", icon: Tablet, caption: "Finger becomes joystick." },
-  { name: "Voice", icon: Mic, caption: "Say it. Confirm it." },
+  { name: "Voice", icon: Mic, caption: "Speak a command." },
   { name: "Tests", icon: FlaskConical, caption: "Measure. Don’t guess." },
   { name: "Calibration", icon: Wrench, caption: "Measure the creature." },
   { name: "Diagnostics", icon: Radio, caption: "Interrogate every wire." },
@@ -259,7 +261,7 @@ export function MissionConsole() {
     [angle, setAngle] = useState(90),
     [mapName, setMapName] = useState("Lab map"),
     [voiceText, setVoiceText] = useState(""),
-    [recording, setRecording] = useState(false),
+    [voicePhase, setVoicePhase] = useState<VoicePhase>("idle"),
     [cloudConfig, setCloudConfig] = useState<Record<string, string>>({}),
     [cloudStatus, setCloudStatus] = useState("Local only"),
     [padStatus, setPadStatus] = useState("Gamepad not connected"),
@@ -269,8 +271,9 @@ export function MissionConsole() {
     [routePlan, setRoutePlan] = useState<PathPlan | null>(null),
     [plannedFingerprint, setPlannedFingerprint] = useState(""),
     [devices, setDevices] = useState<DeviceSession[]>([]),
+    [qrImage, setQrImage] = useState(""),
     [pairing, setPairing] = useState<{code:string;url:string;expires_seconds:number;secure:boolean;expiresAt:number;knownDeviceIds:string[]}|null>(null),
-    [directServo, setDirectServoState] = useState<{enabled:boolean;error:string;port:string}>({enabled:false,error:"Direct servo control is off",port:"/dev/ttyACM0"}),
+    [directServo, setDirectServoState] = useState<{enabled:boolean;error:string;port:string;last_motor_write?:{direction:string;seq:number;right_speed:number;left_speed:number;received_at:number}}>({enabled:false,error:"Direct servo control is off",port:""}),
     [wasdTerminal, setWasdTerminal] = useState<{running:boolean;error:string;path:string;python?:string}>({running:false,error:"WASD terminal is not running",path:"robot-code/t-bot_wasd.py"}),
     [calibratingPad, setCalibratingPad] = useState(false),
     [padSnapshot, setPadSnapshot] = useState<{id:string;axes:number[];buttons:boolean[]}|null>(null),
@@ -280,10 +283,12 @@ export function MissionConsole() {
     [runnerPath, setRunnerPath] = useState(""),
     [runnerArgs, setRunnerArgs] = useState(""),
     [runnerJob, setRunnerJob] = useState<{id:string;path:string;output:string;running:boolean;returncode:number|null}|null>(null);
-  const voiceSocket = useRef<WebSocket | null>(null);
-  const stopAudio = useRef<null | (() => Promise<Blob>)>(null),
-    recordTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
-    photo = useRef<HTMLInputElement>(null),
+  const voiceGeneration = useRef(0);
+  const voiceIntent = useRef<ReturnType<typeof createVoiceIntent> | null>(null);
+  const cancelVoiceRef = useRef(() => {});
+  const voiceSession = useRef<ReturnType<typeof createVoiceSession> | null>(null);
+  const voicePorts = useRef<Parameters<typeof createVoiceSession>[0] | null>(null);
+  const photo = useRef<HTMLInputElement>(null),
     driveTimer = useRef<ReturnType<typeof setInterval> | null>(null),
     completionSeen = useRef(false),
     controlState = useRef({ source, armed });
@@ -304,7 +309,10 @@ export function MissionConsole() {
     [g.send, g.setMessage, source],
   );
   const toggleDirectServo = useCallback(async (enabled:boolean) => {
-    try { setDirectServoState(await g.request(`/direct-servo?enabled=${enabled}`, {method:"POST"}) as {enabled:boolean;error:string;port:string}); }
+    voiceGeneration.current++;
+    cancelVoiceRef.current();
+    setArmed(false);
+    try { setDirectServoState(await g.request(`/direct-servo?enabled=${enabled}`, {method:"POST"}) as {enabled:boolean;error:string;port:string;last_motor_write?:{direction:string;seq:number;right_speed:number;left_speed:number;received_at:number}}); }
     catch (e) { g.setMessage(String(e)); }
   },[g.request,g.setMessage]);
   const toggleWasdTerminal = useCallback(async (enabled:boolean) => {
@@ -315,29 +323,43 @@ export function MissionConsole() {
     } catch (e) { g.setMessage(String(e)); }
   },[g.request,g.setMessage]);
   const activateGesture = useCallback(async()=>{
+    voiceGeneration.current++;
+    cancelVoiceRef.current();
     try{
       await g.request('/gesture/activate',{method:'POST'});
-      setSource('gesture');setArmed(true);g.setMessage('Gesture control authority transferred to the tablet.');
+      setSource('gesture');setArmed(false);g.setMessage('Gesture control selected. On the phone, center your finger and request control.');
     }catch(e){g.setMessage(String(e));}
   },[g.request,g.setMessage]);
   useEffect(()=>{if(g.token){
-    void g.request("/direct-servo").then((v)=>setDirectServoState(v as {enabled:boolean;error:string;port:string})).catch(()=>{});
+    void g.request("/direct-servo").then((v)=>setDirectServoState(v as {enabled:boolean;error:string;port:string;last_motor_write?:{direction:string;seq:number;right_speed:number;left_speed:number;received_at:number}})).catch(()=>{});
     void g.request("/wasd-terminal").then((v)=>setWasdTerminal(v as {running:boolean;error:string;path:string;python?:string})).catch(()=>{});
   }},[g.token,g.request]);
   const stop = useCallback(() => {
+    voiceGeneration.current++;
+    cancelVoiceRef.current();
     setArmed(false);
     if (driveTimer.current) clearInterval(driveTimer.current);
     void g.send({ action: "stop" }).catch((e) => g.setMessage(String(e)));
   }, [g.send, g.setMessage]);
+  useEffect(() => { if (!g.authority) setArmed(false); }, [g.authority]);
   const selectSource = async (s: string) => {
+    const attempt = ++voiceGeneration.current;
+    const intent = createVoiceIntent(g.controlVersion);
+    cancelVoiceRef.current();
     setArmed(false);
-    if (await perform({ action: "claim", source: s })) {
+    try {
+      const stopped = await g.send({ action: "stop", source: s });
+      if (attempt !== voiceGeneration.current || !intent.advance(stopped)) return;
+      const claimed = await g.send({ action: "claim", source: s });
+      if (attempt !== voiceGeneration.current || !intent.advance(claimed)) return;
       setSource(s);
       setArmed(true);
-    }
+    } catch (error) { g.setMessage(String(error)); }
   };
   useEffect(() => {
     if (!g.connected) {
+      voiceGeneration.current++;
+      cancelVoiceRef.current();
       setArmed(false);
     }
   }, [g.connected]);
@@ -356,11 +378,13 @@ export function MissionConsole() {
   const refreshSystem = useCallback(async () => {
     if (!g.token) return;
     try {
-      const [ready, profile, connected] = await Promise.all([
+      const [ready, profile, connected, servo] = await Promise.all([
         g.request("/readiness"),
         g.request("/hardware-profile"),
         g.request("/devices"),
+        g.request("/direct-servo"),
       ]);
+      setDirectServoState(servo);
       setReadiness(ready as ReadinessReport);
       setHardware(profile as HardwareProfile);
       setDevices((connected as { devices: DeviceSession[] }).devices);
@@ -374,6 +398,19 @@ export function MissionConsole() {
     const timer = setInterval(() => void refreshSystem(), activity==="Gesture Control"||activity==="Drive" ? 500 : 2000);
     return () => clearInterval(timer);
   }, [g.token, refreshSystem, activity]);
+  useEffect(() => {
+    if (!pairing || !g.token) { setQrImage(""); return; }
+    let active = true, objectUrl = "";
+    const controller = new AbortController();
+    void fetch(`${API}/pairing/qr.svg?code=${encodeURIComponent(pairing.code)}`, {
+      headers: { Authorization: "Bearer " + g.token }, signal: controller.signal,
+    }).then(async response => {
+      if (!response.ok) throw Error("Pairing QR unavailable; use the secure link.");
+      const blob = await response.blob();
+      if (active) { objectUrl = URL.createObjectURL(blob); setQrImage(objectUrl); }
+    }).catch(error => { if (active) g.setMessage(String(error)); });
+    return () => { active = false; controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [pairing, g.token, g.setMessage]);
   const connectedTablet=devices.find((device)=>device.role==="tablet"&&device.connected);
   useEffect(()=>{
     if(!pairing)return;
@@ -668,71 +705,37 @@ export function MissionConsole() {
     }, 60);
     return () => clearInterval(timer);
   }, [stop,padMap,g.send,g.setMessage]);
-  const previewVoice = async (text?: string, blob?: Blob) => {
+  const previewVoice = async (text: string) => {
+    const ticket = ++voiceGeneration.current;
+    cancelVoiceRef.current();
+    const intent = createVoiceIntent(g.controlVersion);
+    voiceIntent.current = intent;
+    const current = () => ticket === voiceGeneration.current && intent === voiceIntent.current && intent.current();
     try {
-      const result = await g.request(
-        blob ? "/voice/transcribe" : "/voice/interpret",
-        {
-          method: "POST",
-          body: blob || JSON.stringify({ text }),
-          headers: blob ? { "Content-Type": "audio/wav" } : {},
-        },
-      );
-      setVoiceText(result.transcript);
-      if (result.command.action === "stop") {
-        stop();
-        return;
-      }
-      await executeVoice(result.command);
-    } catch (e) {
-      g.setMessage(String(e));
-    }
-  };
-  const finishRecording = async () => {
-    const finish = stopAudio.current;
-    stopAudio.current = null;
-    voiceSocket.current?.close();
-    voiceSocket.current = null;
-    if (recordTimer.current) clearTimeout(recordTimer.current);
-    setRecording(false);
-    if (finish) {
-      try {
-        await previewVoice(undefined, await finish());
-      } catch (e) {
-        g.setMessage(String(e));
-      }
-    }
-  };
-  const startRecording = async () => {
-    if (recording) return;
-    try {
-      const socket = new WebSocket(API.replace("http:", "ws:") + "/voice/live");
-      voiceSocket.current = socket;
-      let ready = false;
-      socket.onopen = () => socket.send(JSON.stringify({ token: g.token }));
-      socket.onmessage = (e) => {
-        const msg = JSON.parse(e.data);
-        if (msg.ready) ready = true;
-        if (msg.stopped) {
-          stop();
-          g.setMessage("Voice STOP acknowledged.");
-        }
-        if (msg.error) g.setMessage(msg.error);
-      };
-      stopAudio.current = await recordVoice((data) => {
-        if (ready && socket.readyState === WebSocket.OPEN) socket.send(data);
+      const result = await g.request("/voice/interpret", {
+        method: "POST", body: JSON.stringify({ text }),
       });
-      setRecording(true);
-      recordTimer.current = setTimeout(() => void finishRecording(), 15000);
-    } catch (e) {
-      voiceSocket.current?.close();
-      g.setMessage(String(e));
-    }
+      if (!current()) return;
+      setVoiceText(result.transcript);
+      if (result.command.action === "stop") stop();
+      else await executeVoice(result.command, current);
+    } catch (error) { if (current()) g.setMessage(String(error)); }
   };
-  const executeVoice = async (cmd: Record<string, unknown>) => {
-    if (!["pause", "resume", "home_set"].includes(String(cmd.action))) {
-      try { await g.send({action:"claim",source:"voice"}); }
-      catch(e){g.setMessage(String(e));return;}
+  const executeVoice = async (cmd: Record<string, unknown>, active: () => boolean) => {
+    const intent = voiceIntent.current;
+    const current = () => active() && intent !== null && intent === voiceIntent.current && intent.current();
+    if (!current()) return;
+    if (!["pause", "resume"].includes(String(cmd.action))) {
+      try {
+        const stopped = await g.send({action:"stop",source:"voice"});
+        if (!intent!.advance(stopped) || !current()) return;
+        const claimed = await g.send({action:"claim",source:"voice"});
+        if (!intent!.advance(claimed) || !current()) return;
+      }
+      catch(e){if(current())g.setMessage(String(e));return;}
+      // Stop/takeover is already ordered after the claim on this WebSocket.
+      // A late acknowledgement must not stop the newly selected controller.
+      if (!current()) return;
       setSource("voice");
       setArmed(false);
     }
@@ -778,15 +781,30 @@ export function MissionConsole() {
       });
     } else await g.send({ ...cmd, source: "voice" });
   };
-  useEffect(
-    () => () => {
-      if (recordTimer.current) clearTimeout(recordTimer.current);
-      void stopAudio.current?.();
-      voiceSocket.current?.close();
-      if (driveTimer.current) clearInterval(driveTimer.current);
-    },
-    [],
-  );
+  voicePorts.current = () => ({
+    open: (onStop, onFailure) => openVoiceLink(websocketUrl(API, "/voice/live"), g.token, onStop, onFailure),
+    record: recordVoice,
+    interpret: (blob) => g.request("/voice/transcribe", {
+      method: "POST", body: blob, headers: { "Content-Type": "audio/wav" },
+    }),
+    execute: executeVoice,
+    stop, phase: setVoicePhase, message: g.setMessage, transcript: setVoiceText,
+  });
+  if (!voiceSession.current) voiceSession.current = createVoiceSession(() => voicePorts.current!());
+  cancelVoiceRef.current = () => voiceSession.current?.cancel();
+  const recording = voicePhase === "recording";
+  const startRecording = () => {
+    voiceGeneration.current++;
+    if (!g.connected) { g.setMessage("Connect the gateway before recording."); return; }
+    voiceIntent.current = createVoiceIntent(g.controlVersion);
+    return voiceSession.current?.start();
+  };
+  const finishRecording = () => voiceSession.current?.finish();
+  useEffect(() => () => {
+    voiceGeneration.current++;
+    voiceSession.current?.cancel();
+    if (driveTimer.current) clearInterval(driveTimer.current);
+  }, []);
   const sync = async () => {
     try {
       setCloudStatus("Syncing…");
@@ -824,10 +842,10 @@ export function MissionConsole() {
   const fresh = t?.scan_age != null && t.scan_age < 0.75,
     live = t?.mode === "ros-hardware",
     virtual = t?.requested_mode ? t.requested_mode === "simulation" : t?.mode === "virtual-lab";
-  const selectRuntimeMode = async (simulation:boolean) => {
+  const selectRuntimeMode = async (mode:"simulation"|"direct_usb"|"hardware") => {
     stop();
     try {
-      const result=await g.request('/mode',{method:'POST',body:JSON.stringify({mode:simulation?'simulation':'hardware'})});
+      const result=await g.request('/mode',{method:'POST',body:JSON.stringify({mode})});
       g.setMessage(result.effective==='ros-hardware'?'Real Raspberry Pi ROS 2 selected.':'Mode changed to '+result.effective+'.');
       await refreshSystem();
     } catch(e){g.setMessage(String(e));}
@@ -845,19 +863,17 @@ export function MissionConsole() {
         </button>
         <div className="cp-top">
           <span className="sim-tag">
-            {live
-              ? "ROS SIMULATION"
-              : virtual
-                ? "VIRTUAL LAB"
-                : "ROBOT OFFLINE"}
+            {live ? "ROS_PI" : t?.mode === "direct-usb" ? "DIRECT_USB" : virtual ? "SIMULATION" : "OUTPUT OFFLINE"}
           </span>
           <span>
             <Radio size={15} />
             {g.connected ? "Gateway online" : "Gateway offline"}
           </span>
           <div className="personality runtime-mode">
-            <span>{virtual ? "SIMULATED" : "REAL BOT"}</span>
-            <Switch aria-label="Switch simulated and real robot" checked={!virtual} disabled={!g.connected} onCheckedChange={(real)=>void selectRuntimeMode(!real)} />
+            <label htmlFor="motor-output-mode">Output</label>
+            <select id="motor-output-mode" aria-label="Motor output mode" disabled={!g.connected} value={t?.requested_mode || "simulation"} onChange={event => void selectRuntimeMode(event.target.value as "simulation"|"direct_usb"|"hardware")}>
+              <option value="simulation">SIMULATION</option><option value="direct_usb">DIRECT_USB · Mac adapter</option><option value="hardware">ROS_PI · ROS gateway</option>
+            </select>
           </div>
           <div className="personality">
             <span>{team ? "TEAM MODE" : "PRESENTATION"}</span>
@@ -898,7 +914,7 @@ export function MissionConsole() {
                   <dd>{g.connected ? "Connected" : "Disconnected"}</dd>
                   <dt>Data source</dt>
                   <dd>
-                    {virtual ? "Virtual Lab" : live ? "ROS 2" : "Unavailable"}
+                    {virtual ? "Simulation" : live ? "ROS_PI" : t?.mode === "direct-usb" ? "DIRECT_USB" : "Unavailable"}
                   </dd>
                   <dt>Navigation</dt>
                   <dd>{t?.navigation_ready ? "Ready" : "Unavailable"}</dd>
@@ -1109,7 +1125,7 @@ export function MissionConsole() {
               <div>
                 <small>02 / DATA SOURCE</small>
                 <strong>
-                  {virtual ? "VIRTUAL LAB" : live ? "ROS 2" : "WAITING"}
+                  {virtual ? "SIMULATION" : live ? "ROS_PI" : t?.mode === "direct-usb" ? "DIRECT_USB" : "WAITING"}
                 </strong>
                 <p>{t?.scenario || "No active world"}</p>
               </div>
@@ -1202,7 +1218,7 @@ export function MissionConsole() {
                 </span>
                 <h1>
                   {activity === "Voice"
-                    ? "Speak. Review. Deploy."
+                    ? "Speak a command."
                     : activity === "Gesture Control"
                       ? "One finger. Five safe zones."
                       : activity === "Explore"
@@ -1233,11 +1249,12 @@ export function MissionConsole() {
                     </p>
                     <button
                       className="primary"
+                      disabled={!g.connected || voicePhase === "starting" || voicePhase === "processing"}
                       onClick={() =>
                         void (recording ? finishRecording() : startRecording())
                       }
                     >
-                      {recording ? "FINISH RECORDING" : "START PUSH-TO-TALK"}
+                      {voicePhase === "starting" ? "PREPARING MICROPHONE…" : voicePhase === "processing" ? "RECOGNIZING…" : recording ? "FINISH RECORDING" : "START RECORDING"}
                     </button>
                     <p>
                       {recording
@@ -1289,7 +1306,7 @@ export function MissionConsole() {
                       </div>
                     ) : pairing ? (
                       <>
-                        <img onError={()=>setPairing(null)} src={`${API}/pairing/qr.svg?token=${encodeURIComponent(g.token)}&code=${encodeURIComponent(pairing.code)}`} alt="Tablet pairing QR code" />
+                        {qrImage && <img src={qrImage} alt="Tablet pairing QR code" />}
                         <small>Scan once. This QR disappears when the tablet connects.</small>
                       </>
                     ) : (
@@ -1298,10 +1315,11 @@ export function MissionConsole() {
                       </button>
                     )}
                     <div className="device-card">
-                      <strong>{directServo.enabled ? "SERVO CONNECTED · TERMINAL RUNNING" : "DIRECT SERVO CONTROL OFF"}</strong>
-                      <span>{directServo.port} · PC-connected session only</span>
-                      <button className="control" onClick={()=>void toggleDirectServo(!directServo.enabled)}>{directServo.enabled ? "DISCONNECT SERVO" : "SERVO IS CONNECTED"}</button>
+                      <strong>{directServo.enabled ? "DIRECT_USB · MOTOR TRANSPORT READY" : "DIRECT_USB OFF"}</strong>
+                      <span>{directServo.port || "No adapter selected"} · Motor IDs: right 1 / left 2 · raw speed 1000</span>
+                      <button className="control" onClick={()=>void toggleDirectServo(!directServo.enabled)}>{directServo.enabled ? "DISCONNECT SERVO" : "CONNECT USB ADAPTER"}</button>
                       <small>{directServo.error}</small>
+                      <small>{directServo.last_motor_write ? `Last SDK-confirmed output: ${directServo.last_motor_write.direction} · R ${directServo.last_motor_write.right_speed} / L ${directServo.last_motor_write.left_speed} · packet ${directServo.last_motor_write.seq}` : "No motor SDK write confirmed in this connection."} API acceptance does not verify wheel motion.</small>
                     </div>
                   </div>
                 ) : activity === "Calibration" ? (
@@ -1317,7 +1335,7 @@ export function MissionConsole() {
                   <div className="mc-input-panel">
                     <Radio size={52} />
                     <h2>{virtual ? "Simulated telemetry. No physical robot is being diagnosed." : readiness?.ready ? "All required systems answer." : "Autonomy is locked. The machine has standards."}</h2>
-                    {virtual && <p>These values come from Virtual Lab so you can test the interface. Switch the top-bar toggle to Real Bot when the Raspberry Pi gateway is connected.</p>}
+                    {virtual && <p>These values come from Virtual Lab so you can test the interface. Choose DIRECT_USB for the adapter plugged into this Mac. Choose ROS_PI only with the ROS gateway configured.</p>}
                     <div className="diagnostic-grid">
                       {Object.entries(readiness?.checks || {}).map(([key,ok])=><div className={ok?'ok':'bad'} key={key}>{ok?<CheckCircle2/>:<AlertTriangle/>}<span>{key.replaceAll('_',' ')}</span><b>{ok?'READY':'MISSING'}</b></div>)}
                     </div>
@@ -1784,7 +1802,7 @@ export function MissionConsole() {
                       <Tablet size={16}/> NEW PAIRING CODE
                     </button>
                     <p className="helper">Four stable frames and 75% confidence are required. Center, outside the pad, camera loss, or disconnect stops movement.</p>
-                    <button className="control" onClick={()=>void toggleDirectServo(!directServo.enabled)}>{directServo.enabled ? "Disconnect servo" : "Servo is connected"}</button>
+                    <button className="control" onClick={()=>void toggleDirectServo(!directServo.enabled)}>{directServo.enabled ? "Disconnect servo" : "Connect USB adapter"}</button>
                   </>
                 )}
                 {activity === "Calibration" && hardware && (

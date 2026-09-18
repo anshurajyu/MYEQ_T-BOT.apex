@@ -1,11 +1,15 @@
-from python_st3215 import ST3215
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from backend.serial_owner import OwnedST3215 as ST3215
+from backend.usb_transport import select_servo_port
 import time
 
 # =========================
 # CONFIGURATION
 # =========================
 
-PORT = "/dev/ttyACM0"
+PORT = select_servo_port()
 
 RIGHT_ID = 1
 LEFT_ID = 2

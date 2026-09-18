@@ -1,2 +1,2 @@
-import { TBotDashboard } from "@/components/tbot-dashboard";
-export default function Home() { return <TBotDashboard />; }
+import { redirect } from "next/navigation";
+export default function Home() { redirect("/mission-control"); }

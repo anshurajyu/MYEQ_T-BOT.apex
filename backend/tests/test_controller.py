@@ -14,8 +14,17 @@ class Robot:
     def navigate(self,p):self.goals.append(p);self.data['nav']='active'
 @pytest.fixture
 def setup(tmp_path):
-    r=Robot();s=Store(tmp_path);c=Controller(r,s);c.execute(Command(id='claim',action='claim'), 'one');return c,r,s
-def cmd(action,**kwargs):return Command(id=action,action=action,**kwargs)
+    r=Robot();s=Store(tmp_path);c=Controller(r,s)
+    execute=c.execute;sequences={}
+    def fresh_command(command,session):
+        proof=c.issue_permit(session);proof.pop('expires_in_ms')
+        sequences[session]=sequences.get(session,0)+1
+        return execute(command.model_copy(update={**proof,'seq':sequences[session]}),session)
+    c.execute=fresh_command
+    c.execute(Command(id='claim',action='claim'), 'one');return c,r,s
+def cmd(action,**kwargs):
+    if action in ('drive','timed'):kwargs={'linear':0.,'angular':0.,**kwargs}
+    return Command(id=action,action=action,**kwargs)
 def test_lease_expiry_cancels(setup):
     c,r,s=setup;c.execute(cmd('drive',linear=.1),'one');c.last_heartbeat=time.monotonic()-2;c.tick();assert c.state=='idle' and c.owner is None and r.stops>=2
 def test_sources_cannot_compete(setup):

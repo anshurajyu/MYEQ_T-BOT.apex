@@ -18,6 +18,7 @@ from tf2_ros import TransformBroadcaster
 from .motor_math import raw_speed, unwrap_delta, wheel_speeds
 from .domain import HardwareProfile
 from .storage import Store
+from .serial_owner import SerialOwner, request_os_exclusive
 
 
 def quaternion(yaw: float) -> Quaternion:
@@ -28,9 +29,16 @@ class ServoBus:
     """Thin adapter around Waveshare's SCServo SDK, kept isolated for testing."""
     def __init__(self, device: str, baud: int):
         from scservo_sdk import PortHandler, PacketHandler, SCS_TOSCS, SCS_TOHOST, COMM_SUCCESS
-        self.port = PortHandler(device)
-        if not self.port.openPort() or not self.port.setBaudRate(baud):
-            raise OSError(f"Cannot open ST3215 bus {device} at {baud} baud")
+        self.owner = SerialOwner(device, 'ROS T-BOT base driver').acquire()
+        self.port = None
+        try:
+            self.port = PortHandler(device)
+            if not self.port.openPort() or not self.port.setBaudRate(baud):
+                raise OSError(f"Cannot open ST3215 bus {device} at {baud} baud")
+            self.os_exclusive = request_os_exclusive(self.port)
+        except BaseException:
+            self.close()
+            raise
         self.packet = PacketHandler(0); self.encode = SCS_TOSCS; self.decode = SCS_TOHOST; self.success = COMM_SUCCESS
 
     def checked(self, result, error, operation):
@@ -66,7 +74,12 @@ class ServoBus:
         }
 
     def close(self):
-        self.port.closePort()
+        try:
+            if self.port is not None:
+                self.port.closePort()
+                self.port = None
+        finally:
+            self.owner.release()
 
 
 class TBotBase(Node):
